@@ -297,8 +297,10 @@ export default function AccountDetailPage() {
           } else {
              throw new Error("Selected transaction not found.");
           }
+       } else if (type === 'upto' && !selectedTransactionId) {
+           throw new Error("Please select a transaction row first to generate a PDF up to that line.");
        } else {
-           throw new Error("Invalid PDF generation type or no transaction selected for 'Up to Selected Line'.");
+           throw new Error("Invalid PDF generation type.");
        }
 
        if (transactionsToInclude.length === 0) {
@@ -374,6 +376,7 @@ export default function AccountDetailPage() {
                      ${currentBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                  </Badge>
                   {selectedTransactionId && <Badge variant="outline" className="ml-2">Row Selected</Badge>}
+                  {!selectedTransactionId && <Badge variant="ghost" className="ml-2 text-muted-foreground">Click row to select</Badge>}
              </CardDescription>
            </CardHeader>
            <CardContent>
@@ -390,10 +393,15 @@ export default function AccountDetailPage() {
                           </Button>
                        </DropdownMenuTrigger>
                        <DropdownMenuContent>
-                          <DropdownMenuItem onClick={() => handleGeneratePdf('whole')} disabled={isPdfGenerating || transactionsWithBalance.length === 0}>
+                          <DropdownMenuItem
+                              onClick={() => handleGeneratePdf('whole')}
+                              disabled={isPdfGenerating || transactionsWithBalance.length === 0}>
                              Whole Account
                           </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => handleGeneratePdf('upto')} disabled={!selectedTransactionId || isPdfGenerating}>
+                          <DropdownMenuItem
+                              onClick={() => handleGeneratePdf('upto')}
+                              disabled={!selectedTransactionId || isPdfGenerating}
+                              title={!selectedTransactionId ? "Select a row first" : undefined}>
                              Up to Selected Line
                           </DropdownMenuItem>
                        </DropdownMenuContent>
