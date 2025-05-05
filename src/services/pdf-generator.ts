@@ -1,9 +1,11 @@
+
 /**
  * Represents a PDF document.
  */
 export interface PdfDocument {
   /**
    * The content of the PDF document as a base64 encoded string.
+   * IMPORTANT: In the mock implementation, this is base64-encoded HTML, not actual PDF data.
    */
   content: string;
 }
@@ -46,7 +48,7 @@ export async function generatePdf(htmlContent: string): Promise<PdfDocument> {
   // TODO: Implement this by calling a real PDF generation service/library (e.g., Puppeteer on a server, jsPDF on client, or an external API).
   // The current implementation is a placeholder and will simulate a delay.
 
-  console.warn("PDF generation is using a mock implementation. It encodes the source HTML to Base64, not generating a real PDF. Downloaded file might appear corrupted if opened as PDF.");
+  console.warn("PDF generation is using mock data. Returning base64 encoded HTML, not a real PDF.");
   await new Promise(resolve => setTimeout(resolve, 500)); // Simulate processing time
 
   // Create a placeholder Base64 by encoding the HTML itself using a safer method
@@ -59,11 +61,14 @@ export async function generatePdf(htmlContent: string): Promise<PdfDocument> {
     content: placeholderBase64, // Return placeholder Base64
   };
 
+  // To make it throw an error if used prematurely:
+  // throw new Error("PDF generation service is not implemented yet.");
 }
 
 /**
  * Helper function to trigger PDF download in the browser.
- * @param base64Content The Base64 encoded PDF content (or HTML content in mock).
+ * Decodes base64 content and creates a Blob for download.
+ * @param base64Content The Base64 encoded PDF content.
  * @param filename The desired filename for the download.
  */
 export function downloadPdf(base64Content: string, filename: string) {
@@ -72,7 +77,7 @@ export function downloadPdf(base64Content: string, filename: string) {
         return;
     }
     try {
-        // Decode Base64 string
+        // Decode Base64 string into binary data
         const byteCharacters = atob(base64Content);
         const byteNumbers = new Array(byteCharacters.length);
         for (let i = 0; i < byteCharacters.length; i++) {
@@ -80,14 +85,11 @@ export function downloadPdf(base64Content: string, filename: string) {
         }
         const byteArray = new Uint8Array(byteNumbers);
 
-        // Determine MIME type
-        // WARNING: Since the mock generatePdf encodes HTML, downloading it as application/pdf
-        // WILL result in a corrupted file. A real implementation generating actual PDF bytes is needed.
-        // To download the source HTML itself *during development with the mock*, change mimeType to 'text/html'.
-        // const mimeType = 'text/html'; // << Use this for mock testing to see the HTML source
-        const mimeType = 'application/pdf'; // << Use this for the final intended functionality
-
-        console.warn(`Attempting to download file as ${mimeType}. If using the mock PDF generator, the content is Base64 encoded HTML, not a real PDF.`);
+        // Define the MIME type for the PDF
+        const mimeType = 'application/pdf';
+        // WARNING: The MOCK generatePdf function returns base64 HTML. Downloading this as PDF
+        // will result in a file that PDF viewers cannot open. A *real* PDF generation
+        // implementation is needed to create a viewable PDF file.
 
         // Create Blob and URL
         const blob = new Blob([byteArray], { type: mimeType });
@@ -97,8 +99,8 @@ export function downloadPdf(base64Content: string, filename: string) {
         const link = document.createElement('a');
         link.href = url;
         link.download = filename;
-        document.body.appendChild(link); // Append link to body
-        link.click(); // Programmatically click the link to trigger the download
+        document.body.appendChild(link); // Append link to body (required for Firefox)
+        link.click(); // Programmatically click the link
         document.body.removeChild(link); // Remove link from body
 
         // Clean up the object URL
@@ -106,7 +108,7 @@ export function downloadPdf(base64Content: string, filename: string) {
 
     } catch (e) {
         console.error("Error decoding Base64 or triggering download:", e);
-        // Fallback for placeholder or invalid Base64
-        alert("Could not decode or download the file. The generated data might be a placeholder or corrupted. Check console for details.");
+        // Provide a more informative message to the user
+        alert(`Could not download the file '${filename}'. The data might be corrupted or PDF generation failed. Check console for details. Note: The current PDF generation is a mock and produces invalid PDF data.`);
     }
 }

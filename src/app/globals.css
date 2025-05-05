@@ -22,6 +22,8 @@
     --destructive-foreground: 0 0% 98%;
     --success: 145 63% 49%; /* Green #2ecc71 */
     --success-foreground: 0 0% 100%; /* White text on success */
+    --status-cr: 145 63% 40%; /* Darker Green for CR text */
+    --status-dr: 0 84.2% 50%; /* Slightly darker Red for DR text */
     --border: 214.3 31.8% 91.4%; /* Slightly grayish border */
     --input: 214.3 31.8% 91.4%;
     --ring: 203 64% 49%; /* Blue for focus rings */
@@ -53,6 +55,8 @@
     --destructive-foreground: 0 0% 98%;
     --success: 145 63% 39%; /* Darker Green for dark mode */
     --success-foreground: 0 0% 100%;
+    --status-cr: 145 55% 55%; /* Lighter Green for CR text in dark mode */
+    --status-dr: 0 70% 60%; /* Lighter Red for DR text in dark mode */
     --border: 240 3.7% 15.9%; /* Dark border */
     --input: 240 3.7% 15.9%;
     --ring: 203 64% 49%;
@@ -75,5 +79,12 @@
   }
   .text-success-foreground {
     @apply text-[hsl(var(--success-foreground))];
+  }
+  /* Status colors */
+  .text-status-cr {
+    @apply text-[hsl(var(--status-cr))];
+  }
+  .text-status-dr {
+    @apply text-[hsl(var(--status-dr))];
   }
 }

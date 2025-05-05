@@ -73,9 +73,15 @@ import { format } from "date-fns";
 // Function to generate PDF (uses pdf-generator service)
 async function generateAccountPdf(accountName: string, transactions: TransactionWithBalance[]) {
   console.log(`Generating PDF for account: ${accountName}`);
-  console.log("Including Transactions:", transactions.map(t => t.number)); // Log transaction numbers
+  console.log("Including Transactions:", transactions.map(t => t.slipNumber));
 
-  // Generate HTML content for the PDF, excluding the 'Code' column and showing Dr/Cr
+  // Determine final balance and DR/CR status
+  const finalBalanceEntry = transactions.length > 0 ? transactions[transactions.length - 1] : null;
+  const finalBalance = finalBalanceEntry?.balance ?? 0;
+  const finalBalanceStatus = finalBalance >= 0 ? "CR" : "DR"; // Assuming positive is Credit, negative is Debit for typical ledgers
+  const absFinalBalance = Math.abs(finalBalance);
+
+  // Generate HTML content for the PDF, excluding the 'Code' column and adding DR/CR
   const htmlContent = `
     <html>
     <head>
@@ -86,17 +92,11 @@ async function generateAccountPdf(accountName: string, transactions: Transaction
         table { width: 100%; border-collapse: collapse; margin-top: 15px; }
         th, td { border: 1px solid #ddd; padding: 8px; text-align: left; font-size: 10px; }
         th { background-color: #f2f2f2; font-weight: bold;}
-        td.number, th.number { text-align: right; width: 40px;}
-        td.currency, th.currency { text-align: right; font-family: monospace; width: 100px; }
-        td.balance, th.balance { text-align: right; font-family: monospace; width: 110px; }
-        td.description, th.description { width: auto; }
-        td.slip, th.slip { width: 80px; }
-        td.date, th.date { width: 70px; }
+        td.number, th.number { text-align: right; }
+        td.currency, th.currency { text-align: right; font-family: monospace; }
+        td.balance-status { font-weight: bold; padding-left: 4px; }
         tr:nth-child(even) { background-color: #f9f9f9; }
         .balance-summary { margin-top: 20px; font-weight: bold; text-align: right; font-size: 12px; }
-        .dr { color: #c0392b; } /* Red for Debit balance */
-        .cr { color: #27ae60; } /* Green for Credit balance */
-        .balance-suffix { font-size: 8px; margin-left: 2px; vertical-align: middle; }
       </style>
     </head>
     <body>
@@ -106,49 +106,42 @@ async function generateAccountPdf(accountName: string, transactions: Transaction
         <thead>
           <tr>
             <th class="number">No.</th>
-            <th class="date">Date</th>
-            <th class="description">Description</th>
-            <th class="slip">Slip No.</th>
+            <th>Date</th>
+            <th>Description</th>
+            <th>Slip No.</th>
             <th class="currency">Debit</th>
             <th class="currency">Credit</th>
-            <th class="balance">Balance</th>
+            <th class="currency">Balance</th>
+            <th>Status</th>
           </tr>
         </thead>
         <tbody>
-          ${transactions.map(t => `
+          ${transactions.map(t => {
+            const balanceStatus = t.balance >= 0 ? "CR" : "DR";
+            const absBalance = Math.abs(t.balance);
+            return `
             <tr>
               <td class="number">${t.number}</td>
-              <td class="date">${new Date(t.date).toLocaleDateString()}</td>
-              <td class="description">${t.description}</td>
-              <td class="slip">${t.slipNumber}</td>
+              <td>${new Date(t.date).toLocaleDateString()}</td>
+              <td>${t.description}</td>
+              <td>${t.slipNumber}</td>
               <td class="currency">${t.debit ? `$${t.debit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '-'}</td>
               <td class="currency">${t.credit ? `$${t.credit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '-'}</td>
-              <td class="balance ${t.balance >= 0 ? 'cr' : 'dr'}">
-                 $${Math.abs(t.balance).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                 <span class="balance-suffix">${t.balance >= 0 ? 'Cr' : 'Dr'}</span>
-              </td>
+              <td class="currency">$${absBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+              <td class="balance-status">${balanceStatus}</td>
             </tr>
-          `).join('')}
+          `}).join('')}
         </tbody>
       </table>
       ${transactions.length > 0 ? `
-      <p class="balance-summary">Final Balance:
-         <span class="${transactions[transactions.length - 1].balance >= 0 ? 'cr' : 'dr'}">
-           $${Math.abs(transactions[transactions.length - 1].balance).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-           <span class="balance-suffix">${transactions[transactions.length - 1].balance >= 0 ? 'Cr' : 'Dr'}</span>
-         </span>
-      </p>
+      <p class="balance-summary">Final Balance: $${absFinalBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${finalBalanceStatus}</p>
       ` : '<p>No transactions to display.</p>'}
     </body>
     </html>
   `;
 
   try {
-    // NOTE: The generatePdf service currently returns base64 encoded HTML,
-    // not a real PDF. Downloading this as application/pdf will result in a corrupt file.
-    // For testing, you might change the mimeType in downloadPdf to 'text/html'.
-    // A real PDF generation library (like jsPDF or Puppeteer on server) is needed for functional PDFs.
-    const pdfDoc = await generatePdf(htmlContent);
+    const pdfDoc = await generatePdf(htmlContent); // Call the actual service
     return pdfDoc;
   } catch (error) {
     console.error("Error generating PDF via service:", error);
@@ -175,9 +168,18 @@ export default function AccountDetailPage() {
   const [isAddTransactionDialogOpen, setIsAddTransactionDialogOpen] = React.useState(false);
   const [isEditTransactionDialogOpen, setIsEditTransactionDialogOpen] = React.useState(false); // The actual edit form dialog
   const [isSavingTransaction, setIsSavingTransaction] = React.useState(false);
-  const [selectedTransactionId, setSelectedTransactionId] = React.useState<string | null>(null);
-  const [isPdfLinePromptOpen, setIsPdfLinePromptOpen] = React.useState(false);
-  const [pdfLineNumber, setPdfLineNumber] = React.useState<string>(""); // State for line number input
+  // State for Partial PDF Dialog
+  const [isPartialPdfDialogOpen, setIsPartialPdfDialogOpen] = React.useState(false);
+  const [partialPdfTransactionNumber, setPartialPdfTransactionNumber] = React.useState<string>("");
+
+
+  // Add/Edit Transaction Form State
+   const [transactionDate, setTransactionDate] = React.useState<Date | undefined>(new Date());
+   const [transactionDesc, setTransactionDesc] = React.useState("");
+   const [transactionSlip, setTransactionSlip] = React.useState("");
+   const [transactionAmount, setTransactionAmount] = React.useState<number | string>("");
+   const [transactionType, setTransactionType] = React.useState<"debit" | "credit">("debit");
+   const [linkedAccountId, setLinkedAccountId] = React.useState<string>("");
 
 
   const userId = user?.uid || "user1"; // Use actual UID if available, else default mock user
@@ -190,7 +192,6 @@ export default function AccountDetailPage() {
        return;
     }
      setIsLoading(true);
-     setSelectedTransactionId(null); // Reset selection on load/reload
 
      // Simulate fetching
      setTimeout(() => {
@@ -251,7 +252,7 @@ export default function AccountDetailPage() {
          toast({ title: "Duplicate Slip Error", description: `Slip number "${slip}" already exists. Please use a unique one.`, variant: "destructive" });
          return;
      }
-      const linkedAccExists = mockDb[userId].accounts.some(acc => acc.id === linkedAccountId); // Check against all accounts, not just 'allAccounts'
+      const linkedAccExists = allAccounts.some(acc => acc.id === linkedAccountId);
       if (!linkedAccExists) {
            toast({ title: "Validation Error", description: "Selected linked account is invalid.", variant: "destructive" });
            return;
@@ -326,13 +327,13 @@ export default function AccountDetailPage() {
  };
 
 
-  const handleEditTransaction = (transaction: TransactionWithBalance) => { // Use TransactionWithBalance here
-    const linkedAccExists = mockDb[userId].accounts.some(acc => acc.name === transaction?.code);
-    if (!linkedAccExists) {
+  const handleEditTransaction = (transaction: Transaction) => {
+    const linkedAcc = allAccounts.find(acc => acc.name === transaction?.code);
+    if (!linkedAcc) {
         toast({ title: "Error", description: `Cannot edit: Linked account "${transaction?.code}" not found or is inactive.`, variant: "destructive" });
         return;
     }
-    setEditTarget(transaction); // Store the full transaction including balance initially
+    setEditTarget(transaction);
     setShowEditConfirm(true); // Show the initial confirmation dialog
   };
 
@@ -348,7 +349,7 @@ export default function AccountDetailPage() {
          setTransactionType(editTarget.debit ? "debit" : "credit");
 
           // Find the linked account ID based on the 'code' (name). Handle potential missing linked account.
-          const linkedAcc = mockDb[userId].accounts.find(acc => acc.name === editTarget?.code); // Check against all accounts
+          const linkedAcc = allAccounts.find(acc => acc.name === editTarget?.code);
           setLinkedAccountId(linkedAcc?.id || ""); // Set linked account ID
 
          // --- Open the Actual Edit Dialog ---
@@ -378,7 +379,7 @@ export default function AccountDetailPage() {
            toast({ title: "Duplicate Slip Error", description: `Slip number "${slip}" already exists. Please use a unique one.`, variant: "destructive" });
            return;
         }
-        const linkedAccExists = mockDb[userId].accounts.some(acc => acc.id === linkedAccountId); // Check against all accounts
+        const linkedAccExists = allAccounts.some(acc => acc.id === linkedAccountId);
         if (!linkedAccExists) {
            toast({ title: "Validation Error", description: "Selected linked account is invalid.", variant: "destructive" });
            return;
@@ -433,6 +434,7 @@ export default function AccountDetailPage() {
               description: desc,
               slipNumber: slip, // Use new slip number
               code: newLinkedAccName, // Link to the NEW linked account's name
+              [transactionType]: amount, // Set debit or credit based on selection
               debit: transactionType === 'debit' ? amount : undefined,
               credit: transactionType === 'credit' ? amount : undefined,
           };
@@ -446,6 +448,7 @@ export default function AccountDetailPage() {
               description: desc,
               slipNumber: slip, // Use new slip number
               code: currentAccName, // Link back to the current account's name
+              [oppositeType]: amount, // Opposite entry type
               debit: oppositeType === 'debit' ? amount : undefined,
               credit: oppositeType === 'credit' ? amount : undefined,
           };
@@ -520,34 +523,26 @@ export default function AccountDetailPage() {
          mockDb[userId].transactions = mockDb[userId].transactions.filter(t => t.slipNumber !== slipToDelete);
          const deletedCount = initialLength - mockDb[userId].transactions.length;
 
-         if (deletedCount < 2 && deletedCount > 0) { // Only warn if some but not all deleted
+         if (deletedCount < 2) {
              console.warn(`Attempted to delete slip ${slipToDelete}, but found ${deletedCount} matching transactions instead of 2. Data might be inconsistent.`);
-              toast({ title: "Partial Deletion", description: `Only found ${deletedCount} entry/entries for slip ${slipToDelete}. Data might be inconsistent.`, variant: "destructive" });
-         } else if (deletedCount === 0) {
-              console.warn(`Attempted to delete slip ${slipToDelete}, but no matching transactions found.`);
-              toast({ title: "Deletion Failed", description: `No transactions found for slip number ${slipToDelete}.`, variant: "destructive" });
+             // Decide if you want to proceed or show an error
          }
 
-
-         // Recalculate balances for BOTH accounts if deletion occurred
-         if (deletedCount > 0) {
-            updateAccountBalance(currentAccountId, userId);
-            if (linkedAccountId) {
-               updateAccountBalance(linkedAccountId, userId);
-            }
-             toast({
-                 title: "Transaction Deleted",
-                 description: `Transaction ${slipToDelete} and its linked entry removed. Balances updated.`,
-                 variant: "default",
-             });
+         // Recalculate balances for BOTH accounts
+         updateAccountBalance(currentAccountId, userId);
+         if (linkedAccountId) {
+           updateAccountBalance(linkedAccountId, userId);
          }
 
-         // Refresh data for the current page regardless
+         // Refresh data for the current page
          loadAccountData(); // This will set isLoading back to false
 
-         if (selectedTransactionId === deleteTarget.id) {
-             setSelectedTransactionId(null); // Deselect if the deleted row was selected
-         }
+         toast({
+           title: "Transaction Deleted",
+           description: `Transaction ${slipToDelete} and its linked entry removed. Balances updated.`,
+           variant: "default", // Use default variant for successful deletion
+         });
+
          setDeleteTarget(null); // Reset delete target
       }, 500); // Simulate deletion delay
      } else {
@@ -556,67 +551,6 @@ export default function AccountDetailPage() {
    };
 
   // --- PDF Generation ---
-
-    const openPdfLinePrompt = () => {
-        setPdfLineNumber(""); // Reset line number input
-        setIsPdfLinePromptOpen(true);
-    };
-
-    const handleGeneratePdfUptoLine = async () => {
-        if (!account) {
-            toast({ title: "Error", description: "Account data not loaded.", variant: "destructive" });
-            return;
-        }
-        const lineNum = parseInt(pdfLineNumber, 10);
-        if (isNaN(lineNum) || lineNum <= 0 || lineNum > transactionsWithBalance.length) {
-            toast({
-                title: "Invalid Line Number",
-                description: `Please enter a valid transaction number between 1 and ${transactionsWithBalance.length}.`,
-                variant: "destructive"
-            });
-            return;
-        }
-
-        setIsPdfLinePromptOpen(false); // Close the prompt dialog
-        setIsPdfGenerating(true);
-        let transactionsToInclude: TransactionWithBalance[] = [];
-        let toastMessage = "";
-        let filename = `Account_${account.name.replace(/\s+/g, '_')}_${new Date().toISOString().split('T')[0]}.pdf`;
-
-        try {
-            // Find the transaction by its 'number' property (which corresponds to the line number)
-             const transactionIndex = transactionsWithBalance.findIndex(t => t.number === lineNum);
-
-             if (transactionIndex === -1) {
-                  throw new Error(`Transaction number ${lineNum} not found.`);
-             }
-
-            // Get all transactions up to and including the selected line number
-            transactionsToInclude = transactionsWithBalance.slice(0, transactionIndex + 1);
-
-            if (transactionsToInclude.length === 0) {
-                throw new Error("No transactions found up to the specified line.");
-            }
-
-            const selectedSlip = transactionsWithBalance[transactionIndex].slipNumber;
-            toastMessage = `Generating PDF for '${account.name}' up to transaction no. ${lineNum}...`;
-            filename = `Account_${account.name.replace(/\s+/g, '_')}_Upto_No_${lineNum}_${new Date().toISOString().split('T')[0]}.pdf`;
-
-            toast({ title: "Processing...", description: toastMessage });
-
-            const pdfDoc = await generateAccountPdf(account.name, transactionsToInclude);
-            downloadPdf(pdfDoc.content, filename); // Trigger download using helper
-            toast({ title: "PDF Ready", description: `PDF '${filename}' generated and download started.` });
-
-        } catch (error: any) {
-            console.error("PDF generation/download failed:", error);
-            toast({ title: "PDF Error", description: error.message || "Could not generate or download PDF.", variant: "destructive" });
-        } finally {
-            setIsPdfGenerating(false);
-        }
-    };
-
-
   const handleGeneratePdf = async (type: 'whole' | 'upto') => {
      if (!account) {
           toast({ title: "Error", description: "Account data not loaded.", variant: "destructive" });
@@ -629,31 +563,35 @@ export default function AccountDetailPage() {
      }
 
      if (type === 'upto') {
-         openPdfLinePrompt(); // Open the line number prompt dialog
-         return; // Stop further execution, handleGeneratePdfUptoLine will take over
+       // Open the dialog to ask for the transaction number
+       setPartialPdfTransactionNumber(""); // Reset input
+       setIsPartialPdfDialogOpen(true);
+       return; // Stop here, the dialog's action will handle generation
      }
 
-     // --- Handle 'whole' case ---
      setIsPdfGenerating(true);
      let transactionsToInclude: TransactionWithBalance[] = [];
      let toastMessage = "";
      let filename = `Account_${account.name.replace(/\s+/g, '_')}_${new Date().toISOString().split('T')[0]}.pdf`;
 
      try {
+       if (type === 'whole') {
          transactionsToInclude = transactionsWithBalance; // Use all currently displayed transactions
          toastMessage = `Generating PDF for the whole account '${account.name}'...`;
          filename = `Account_${account.name.replace(/\s+/g, '_')}_Whole_${new Date().toISOString().split('T')[0]}.pdf`;
+       }
+       // 'upto' case is handled by handleGeneratePartialPdf
 
-         toast({ title: "Processing...", description: toastMessage });
+       toast({ title: "Processing...", description: toastMessage });
 
-         // Ensure there are transactions to include before generating
-         if (transactionsToInclude.length === 0) {
-             throw new Error("No transactions available to include in the PDF.");
-         }
+       // Ensure there are transactions to include before generating
+        if (transactionsToInclude.length === 0) {
+            throw new Error("No transactions selected or available to include in the PDF.");
+        }
 
-         const pdfDoc = await generateAccountPdf(account.name, transactionsToInclude);
-         downloadPdf(pdfDoc.content, filename); // Trigger download using helper
-         toast({ title: "PDF Ready", description: `PDF '${filename}' generated and download started.` });
+       const pdfDoc = await generateAccountPdf(account.name, transactionsToInclude);
+       downloadPdf(pdfDoc.content, filename); // Trigger download using helper
+       toast({ title: "PDF Ready", description: `PDF '${filename}' generated and download started.` });
 
      } catch (error: any) {
         console.error("PDF generation/download failed:", error);
@@ -663,12 +601,65 @@ export default function AccountDetailPage() {
      }
    };
 
+   // --- Handle Partial PDF Generation ---
+   const handleGeneratePartialPdf = async () => {
+     if (!account) return;
+     setIsPartialPdfDialogOpen(false); // Close the dialog
+
+     const targetNumberStr = partialPdfTransactionNumber.trim();
+     if (!targetNumberStr) {
+         toast({ title: "Input Required", description: "Please enter a transaction number.", variant: "destructive" });
+         return;
+     }
+     const targetNumber = parseInt(targetNumberStr, 10);
+     if (isNaN(targetNumber) || targetNumber <= 0) {
+          toast({ title: "Invalid Input", description: "Please enter a valid positive transaction number.", variant: "destructive" });
+          return;
+     }
+
+     // Find the index of the transaction with the given number
+     const targetIndex = transactionsWithBalance.findIndex(t => t.number === targetNumber);
+
+     if (targetIndex === -1) {
+         toast({ title: "Not Found", description: `Transaction number ${targetNumber} not found in this account.`, variant: "destructive" });
+         return;
+     }
+
+     setIsPdfGenerating(true);
+     let transactionsToInclude: TransactionWithBalance[] = [];
+     let toastMessage = "";
+     let filename = "";
+
+     try {
+       // Get all transactions up to and including the one with the target number
+       transactionsToInclude = transactionsWithBalance.slice(0, targetIndex + 1);
+
+       if (transactionsToInclude.length === 0) {
+         throw new Error("No transactions found up to the specified number.");
+       }
+
+       const targetSlip = transactionsWithBalance[targetIndex].slipNumber;
+       toastMessage = `Generating PDF for '${account.name}' up to transaction number ${targetNumber} (Slip: ${targetSlip})...`;
+       filename = `Account_${account.name.replace(/\s+/g, '_')}_Upto_No${targetNumber}_${new Date().toISOString().split('T')[0]}.pdf`;
+
+       toast({ title: "Processing...", description: toastMessage });
+
+       const pdfDoc = await generateAccountPdf(account.name, transactionsToInclude);
+       downloadPdf(pdfDoc.content, filename); // Trigger download
+       toast({ title: "PDF Ready", description: `PDF '${filename}' generated and download started.` });
+
+     } catch (error: any) {
+       console.error("Partial PDF generation/download failed:", error);
+       toast({ title: "PDF Error", description: error.message || "Could not generate or download partial PDF.", variant: "destructive" });
+     } finally {
+       setIsPdfGenerating(false);
+     }
+   };
+
    // Calculate current balance from the loaded account state
    const currentBalance = account?.balance ?? 0;
-
-   const handleRowClick = (transactionId: string) => {
-      setSelectedTransactionId(prevId => (prevId === transactionId ? null : transactionId)); // Toggle selection
-   };
+   const balanceStatus = currentBalance >= 0 ? "CR" : "DR";
+   const absCurrentBalance = Math.abs(currentBalance);
 
 
   // --- Conditional Rendering for Loading/Error States ---
@@ -699,7 +690,9 @@ export default function AccountDetailPage() {
     }
 
     if (!user) {
-        return null;
+        // This case should ideally be handled by the useEffect redirect,
+        // but it's good practice to have a fallback return null or a message.
+        return null; // Or a loading/redirect indicator if preferred
     }
 
     if (isLoading) { // Separate loading state for account data fetching
@@ -731,6 +724,7 @@ export default function AccountDetailPage() {
                                  <TableHead className="text-right w-[120px]"><Skeleton className="h-4 w-20 ml-auto" /></TableHead>
                                  <TableHead className="text-right w-[120px]"><Skeleton className="h-4 w-20 ml-auto" /></TableHead>
                                  <TableHead className="text-right w-[130px]"><Skeleton className="h-4 w-24 ml-auto" /></TableHead>
+                                 <TableHead className="w-[70px]"><Skeleton className="h-4 w-10" /></TableHead> {/* Status */}
                                  <TableHead className="w-[150px]"><Skeleton className="h-4 w-28" /></TableHead>
                                  <TableHead className="w-[80px]"><Skeleton className="h-4 w-12" /></TableHead>
                              </TableRow>
@@ -745,6 +739,7 @@ export default function AccountDetailPage() {
                                      <TableCell><Skeleton className="h-4 w-20 ml-auto" /></TableCell>
                                      <TableCell><Skeleton className="h-4 w-20 ml-auto" /></TableCell>
                                      <TableCell><Skeleton className="h-4 w-24 ml-auto" /></TableCell>
+                                     <TableCell><Skeleton className="h-4 w-10" /></TableCell> {/* Status */}
                                      <TableCell><Skeleton className="h-4 w-28" /></TableCell>
                                      <TableCell><Skeleton className="h-8 w-8" /></TableCell> {/* Action button skeleton */}
                                  </TableRow>
@@ -795,15 +790,9 @@ export default function AccountDetailPage() {
              </div>
              <CardDescription>
                  View and manage transactions for this account. Current Balance:
-                  <Badge
-                    variant={currentBalance >= 0 ? "secondary" : "destructive"}
-                    className="ml-2 font-mono text-sm"
-                  >
-                    ${Math.abs(currentBalance).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    <span className="ml-1 text-xs font-normal">
-                        {currentBalance >= 0 ? 'Cr' : 'Dr'}
-                    </span>
-                  </Badge>
+                 <Badge variant={balanceStatus === "CR" ? "secondary" : "destructive"} className="ml-2 font-mono text-sm">
+                      ${absCurrentBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {balanceStatus}
+                 </Badge>
              </CardDescription>
            </CardHeader>
            <CardContent>
@@ -827,10 +816,10 @@ export default function AccountDetailPage() {
                              Whole Account
                           </DropdownMenuItem>
                           <DropdownMenuItem
-                              onClick={() => handleGeneratePdf('upto')}
+                              onSelect={(e) => { e.preventDefault(); handleGeneratePdf('upto'); }} // Use onSelect to prevent closing and trigger action
                               disabled={isPdfGenerating || transactionsWithBalance.length === 0}
-                              title={transactionsWithBalance.length === 0 ? "No transactions available" : "Generate PDF up to a specific line number"}>
-                             Up to Line No...
+                              title={transactionsWithBalance.length === 0 ? "No transactions to export" : "Generate up to a specific transaction number"}>
+                             Up to Transaction No...
                           </DropdownMenuItem>
                        </DropdownMenuContent>
                      </DropdownMenu>
@@ -848,70 +837,72 @@ export default function AccountDetailPage() {
                    <TableHead className="text-right w-[120px]">Debit</TableHead>
                    <TableHead className="text-right w-[120px]">Credit</TableHead>
                    <TableHead className="text-right w-[130px]">Balance</TableHead>
+                   <TableHead className="w-[70px]">Status</TableHead> {/* DR/CR Status */}
                    <TableHead className="w-[150px]">Code (Linked)</TableHead>
                    <TableHead className="w-[80px]">Actions</TableHead>
                  </TableRow>
                </TableHeader>
                <TableBody>
                  {transactionsWithBalance.length > 0 ? (
-                   transactionsWithBalance.map((t) => (
-                     <TableRow
-                       key={t.id}
-                       onClick={() => handleRowClick(t.id)}
-                       className={cn(
-                         "cursor-pointer hover:bg-muted/80",
-                         selectedTransactionId === t.id && "bg-primary/10 hover:bg-primary/15"
-                       )}
-                       aria-selected={selectedTransactionId === t.id}
-                      >
-                       <TableCell className="text-right">
-                          <div className="flex items-center justify-end gap-1">
-                             {selectedTransactionId === t.id && <CheckCircle className="h-3 w-3 text-primary flex-shrink-0" />}
-                             <span className="flex-grow text-right">{t.number}</span>
-                          </div>
-                       </TableCell>
-                       <TableCell>{new Date(t.date).toLocaleDateString()}</TableCell>
-                       <TableCell className="max-w-[250px] truncate" title={t.description}>{t.description}</TableCell>
-                       <TableCell>{t.slipNumber}</TableCell>
-                       <TableCell className="text-right font-mono">
-                         {t.debit ? `$${t.debit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "-"}
-                       </TableCell>
-                       <TableCell className="text-right font-mono">
-                          {t.credit ? `$${t.credit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "-"}
-                       </TableCell>
-                       <TableCell className={cn(
-                           "text-right font-mono",
-                           t.balance < 0 ? "text-destructive" : ""
-                        )}>
-                          {`$${Math.abs(t.balance).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
-                          <span className="ml-1 text-xs text-muted-foreground">{t.balance >= 0 ? 'Cr' : 'Dr'}</span>
-                       </TableCell>
-                       <TableCell className="max-w-[150px] truncate" title={t.code}>{t.code || "-"}</TableCell>
-                       <TableCell onClick={(e) => e.stopPropagation()} className="cursor-default"> {/* Prevent row click when clicking actions */}
-                         <DropdownMenu>
-                           <DropdownMenuTrigger asChild>
-                             <Button aria-haspopup="true" size="icon" variant="ghost" aria-label={`Actions for transaction ${t.slipNumber}`}>
-                               <MoreVertical className="h-4 w-4" />
-                             </Button>
-                           </DropdownMenuTrigger>
-                           <DropdownMenuContent align="end">
-                             <DropdownMenuItem onClick={(e) => {e.stopPropagation(); handleEditTransaction(t); }}>
-                               <Edit className="mr-2 h-4 w-4" /> Edit
-                             </DropdownMenuItem>
-                             <DropdownMenuItem
-                                onSelect={(e) => { e.preventDefault(); e.stopPropagation(); handleDeleteTransaction(t); }}
-                                className="text-destructive focus:bg-destructive/10 focus:text-destructive"
-                              >
-                                <Trash2 className="mr-2 h-4 w-4" /> Delete
-                             </DropdownMenuItem>
-                           </DropdownMenuContent>
-                         </DropdownMenu>
-                       </TableCell>
-                     </TableRow>
-                   ))
+                   transactionsWithBalance.map((t) => {
+                     const rowBalanceStatus = t.balance >= 0 ? "CR" : "DR";
+                     const rowAbsBalance = Math.abs(t.balance);
+                     return (
+                       <TableRow
+                         key={t.id}
+                         className={cn(
+                           "hover:bg-muted/80" // Removed row selection styling
+                         )}
+                        >
+                         <TableCell>{t.number}</TableCell>
+                         <TableCell>{new Date(t.date).toLocaleDateString()}</TableCell>
+                         <TableCell className="max-w-[250px] truncate" title={t.description}>{t.description}</TableCell>
+                         <TableCell>{t.slipNumber}</TableCell>
+                         <TableCell className="text-right font-mono">
+                           {t.debit ? `$${t.debit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "-"}
+                         </TableCell>
+                         <TableCell className="text-right font-mono">
+                            {t.credit ? `$${t.credit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "-"}
+                         </TableCell>
+                         <TableCell className="text-right font-mono">
+                            {`$${rowAbsBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                         </TableCell>
+                         <TableCell
+                            className={cn(
+                                "font-semibold",
+                                rowBalanceStatus === "CR" ? "text-green-600" : "text-red-600",
+                                "dark:text-green-500 dark:text-red-500" // Optional dark mode colors
+                            )}
+                         >
+                             {rowBalanceStatus}
+                         </TableCell>
+                         <TableCell className="max-w-[150px] truncate" title={t.code}>{t.code || "-"}</TableCell>
+                         <TableCell> {/* Removed stopPropagation */}
+                           <DropdownMenu>
+                             <DropdownMenuTrigger asChild>
+                               <Button aria-haspopup="true" size="icon" variant="ghost" aria-label={`Actions for transaction ${t.slipNumber}`}>
+                                 <MoreVertical className="h-4 w-4" />
+                               </Button>
+                             </DropdownMenuTrigger>
+                             <DropdownMenuContent align="end">
+                               <DropdownMenuItem onClick={() => handleEditTransaction(t)}>
+                                 <Edit className="mr-2 h-4 w-4" /> Edit
+                               </DropdownMenuItem>
+                               <DropdownMenuItem
+                                  onSelect={(e) => { e.preventDefault(); handleDeleteTransaction(t); }}
+                                  className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+                                >
+                                  <Trash2 className="mr-2 h-4 w-4" /> Delete
+                               </DropdownMenuItem>
+                             </DropdownMenuContent>
+                           </DropdownMenu>
+                         </TableCell>
+                       </TableRow>
+                     );
+                   })
                  ) : (
                    <TableRow>
-                     <TableCell colSpan={9} className="text-center h-24 text-muted-foreground">
+                     <TableCell colSpan={10} className="text-center h-24 text-muted-foreground">
                        No transactions found for this account.
                      </TableCell>
                    </TableRow>
@@ -921,7 +912,7 @@ export default function AccountDetailPage() {
            </CardContent>
            <CardFooter>
              <div className="text-xs text-muted-foreground">
-               Showing <strong>{transactionsWithBalance.length}</strong> transaction(s). {selectedTransactionId ? '1 row selected.' : ''}
+               Showing <strong>{transactionsWithBalance.length}</strong> transaction(s).
              </div>
            </CardFooter>
          </Card>
@@ -929,48 +920,48 @@ export default function AccountDetailPage() {
 
        {/* --- Dialogs --- */}
 
-        {/* PDF Line Number Prompt Dialog */}
-        <Dialog open={isPdfLinePromptOpen} onOpenChange={setIsPdfLinePromptOpen}>
-           <DialogContent className="sm:max-w-xs">
-             <DialogHeader>
-               <DialogTitle>Generate PDF Up To Line</DialogTitle>
-               <DialogDescription>
-                 Enter the transaction number (No.) you want to include up to.
-               </DialogDescription>
-             </DialogHeader>
-             <div className="grid gap-4 py-4">
-               <div className="grid grid-cols-3 items-center gap-4">
-                 <Label htmlFor="line-number" className="text-right">
-                   Line No.
-                 </Label>
-                 <Input
-                   id="line-number"
-                   type="number"
-                   value={pdfLineNumber}
-                   onChange={(e) => setPdfLineNumber(e.target.value)}
-                   className="col-span-2"
-                   placeholder={`1-${transactionsWithBalance.length}`}
-                   min="1"
-                   max={transactionsWithBalance.length}
-                   disabled={isPdfGenerating}
-                 />
-               </div>
-             </div>
-             <DialogFooter>
-               <DialogClose asChild>
-                 <Button type="button" variant="outline" disabled={isPdfGenerating}>Cancel</Button>
-               </DialogClose>
-               <Button
-                 type="button"
-                 onClick={handleGeneratePdfUptoLine}
-                 disabled={isPdfGenerating || !pdfLineNumber || parseInt(pdfLineNumber, 10) <= 0 || parseInt(pdfLineNumber, 10) > transactionsWithBalance.length}
-               >
-                 {isPdfGenerating ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : "Generate"}
-               </Button>
-             </DialogFooter>
-           </DialogContent>
+        {/* Partial PDF Generation Dialog */}
+        <Dialog open={isPartialPdfDialogOpen} onOpenChange={setIsPartialPdfDialogOpen}>
+            <DialogContent className="sm:max-w-md">
+                <DialogHeader>
+                    <DialogTitle>Generate PDF Up To Transaction</DialogTitle>
+                    <DialogDescription>
+                        Enter the transaction number (No.) up to which you want to include entries in the PDF.
+                    </DialogDescription>
+                </DialogHeader>
+                <div className="grid gap-4 py-4">
+                    <div className="grid grid-cols-4 items-center gap-4">
+                        <Label htmlFor="partial-pdf-number" className="text-right">
+                            Trans. No.
+                        </Label>
+                        <Input
+                            id="partial-pdf-number"
+                            type="number"
+                            value={partialPdfTransactionNumber}
+                            onChange={(e) => setPartialPdfTransactionNumber(e.target.value)}
+                            className="col-span-3"
+                            placeholder="e.g., 5"
+                            min="1"
+                            step="1"
+                            disabled={isPdfGenerating}
+                            required
+                        />
+                    </div>
+                </div>
+                <DialogFooter>
+                    <DialogClose asChild>
+                        <Button type="button" variant="outline" disabled={isPdfGenerating}>Cancel</Button>
+                    </DialogClose>
+                    <Button
+                       type="button"
+                       onClick={handleGeneratePartialPdf}
+                       disabled={isPdfGenerating || !partialPdfTransactionNumber.trim()}
+                    >
+                       {isPdfGenerating ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : "Generate PDF"}
+                    </Button>
+                </DialogFooter>
+            </DialogContent>
         </Dialog>
-
 
        {/* Add Transaction Dialog */}
        <Dialog open={isAddTransactionDialogOpen} onOpenChange={(open) => { if(!isSavingTransaction) setIsAddTransactionDialogOpen(open);}}>
@@ -1079,8 +1070,8 @@ export default function AccountDetailPage() {
                               <SelectValue placeholder="Select account..." />
                           </SelectTrigger>
                           <SelectContent>
-                              {mockDb[userId].accounts.filter(acc => acc.id !== accountId).length > 0 ? ( // Filter out current account and check if others exist
-                                  mockDb[userId].accounts.filter(acc => acc.id !== accountId).map(acc => (
+                              {allAccounts.length > 0 ? (
+                                  allAccounts.map(acc => (
                                       <SelectItem key={acc.id} value={acc.id}>{acc.name}</SelectItem>
                                   ))
                               ) : (
@@ -1236,13 +1227,13 @@ export default function AccountDetailPage() {
                               <SelectValue placeholder="Select account..." />
                           </SelectTrigger>
                           <SelectContent>
-                              {mockDb[userId].accounts.filter(acc => acc.id !== accountId).map(acc => ( // Filter out current account
+                              {allAccounts.map(acc => (
                                   <SelectItem key={acc.id} value={acc.id}>{acc.name}</SelectItem>
                               ))}
-                               {/* Add the original linked account if it's the current account (edge case, shouldn't happen with filter) or inactive */}
-                               {editTarget && !mockDb[userId].accounts.some(a => a.name === editTarget.code && a.id !== accountId) &&
-                                  <SelectItem value={mockDb[userId].accounts.find(a => a.name === editTarget.code)?.id || ""} disabled>
-                                      {editTarget.code} (Original)
+                               {/* Optionally add the original linked account if it's no longer in 'allAccounts' but is the current selection */}
+                               {editTarget && !allAccounts.some(a => a.name === editTarget.code) &&
+                                  <SelectItem value={editTarget.accountId} disabled>
+                                      {editTarget.code} (Original - Inactive/Deleted?)
                                   </SelectItem>
                                }
                           </SelectContent>
@@ -1272,7 +1263,7 @@ export default function AccountDetailPage() {
                           transactionSlip.trim() === editTarget.slipNumber &&
                           parseFloat(transactionAmount.toString()) === (editTarget.debit ?? editTarget.credit ?? 0) &&
                           transactionType === (editTarget.debit ? "debit" : "credit") &&
-                          linkedAccountId === mockDb[userId].accounts.find(a=>a.name === editTarget?.code)?.id // Check against full DB
+                          linkedAccountId === allAccounts.find(a=>a.name === editTarget?.code)?.id
                       )
                  }
                >
@@ -1294,7 +1285,7 @@ export default function AccountDetailPage() {
            </AlertDialogHeader>
            <AlertDialogFooter>
              <AlertDialogCancel onClick={() => setDeleteTarget(null)}>Cancel</AlertDialogCancel>
-             <AlertDialogAction onClick={confirmFirstDelete} variant="default">Continue</AlertDialogAction> {/* Changed variant */}
+             <AlertDialogAction onClick={confirmFirstDelete} variant="destructive">Continue</AlertDialogAction>
            </AlertDialogFooter>
          </AlertDialogContent>
        </AlertDialog>
@@ -1310,7 +1301,7 @@ export default function AccountDetailPage() {
            </AlertDialogHeader>
            <AlertDialogFooter>
              <AlertDialogCancel onClick={() => setDeleteTarget(null)}>Cancel</AlertDialogCancel>
-              <Button onClick={confirmSecondDelete} variant="destructive">
+              <Button onClick={confirmSecondDelete} variant="destructive" disabled={isLoading}> {/* Disable button while loading */}
                  {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : "Yes, Delete Transaction"}
               </Button>
            </AlertDialogFooter>
