@@ -1,3 +1,4 @@
+// src/app/dashboard/page.tsx
 "use client";
 
 import * as React from "react";
@@ -5,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/firebase/client";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
-import { PlusCircle, Edit, Trash2, Eye, LogOut, MoreVertical } from "lucide-react";
+import { PlusCircle, Edit, Trash2, Eye, LogOut, MoreVertical, Loader2, AlertCircle } from "lucide-react";
 import {
   Table,
   TableBody,
@@ -31,22 +32,22 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+  DialogClose,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
-import ThemeToggle from "@/components/theme-toggle"; // Import ThemeToggle
-
-// Mock data for accounts - replace with actual data fetching
-interface Account {
-  id: string;
-  name: string;
-  balance: number;
-}
-
-const initialAccounts: Account[] = [
-  { id: "1", name: "Cash", balance: 1500.75 },
-  { id: "2", name: "Accounts Receivable", balance: 5200.00 },
-  { id: "3", name: "Office Supplies", balance: 350.20 },
-];
+import ThemeToggle from "@/components/theme-toggle";
+import type { Account } from "@/types";
+import { mockDb, getNextAccountId, updateAccountBalance } from "@/lib/mock-data"; // Import mock data and helpers
 
 export default function DashboardPage() {
   const { user, loading, signOut } = useAuth();
@@ -54,48 +55,173 @@ export default function DashboardPage() {
   const { toast } = useToast();
   const [accounts, setAccounts] = React.useState<Account[]>([]);
   const [isLoadingAccounts, setIsLoadingAccounts] = React.useState(true);
+  const [isAddAccountDialogOpen, setIsAddAccountDialogOpen] = React.useState(false);
+  const [isEditAccountDialogOpen, setIsEditAccountDialogOpen] = React.useState(false);
+  const [accountToEdit, setAccountToEdit] = React.useState<Account | null>(null);
+  const [newAccountName, setNewAccountName] = React.useState("");
+  const [editAccountName, setEditAccountName] = React.useState("");
+  const [isSavingAccount, setIsSavingAccount] = React.useState(false);
+  const [accountToDelete, setAccountToDelete] = React.useState<Account | null>(null);
+
+  const userId = user?.uid || "user1"; // Use actual UID if available, else default mock user
 
   React.useEffect(() => {
     if (!loading && !user) {
       router.push("/"); // Redirect to login if not authenticated
     } else if (user) {
-      // Simulate fetching accounts
+      setIsLoadingAccounts(true);
+      // Simulate fetching accounts from mock data
       setTimeout(() => {
-        setAccounts(initialAccounts);
+        // Recalculate all balances on load (simple approach for mock data)
+        const currentAccounts = mockDb[userId]?.accounts || [];
+        currentAccounts.forEach(acc => updateAccountBalance(acc.id, userId));
+
+        setAccounts([...(mockDb[userId]?.accounts || [])]); // Use spread to trigger re-render
         setIsLoadingAccounts(false);
-      }, 1500); // Simulate network delay
+      }, 500); // Shorter delay now
     }
-  }, [user, loading, router]);
+  }, [user, loading, router, userId]);
+
+  // --- Account Management Functions ---
+
+  const openAddAccountDialog = () => {
+    setNewAccountName(""); // Reset name field
+    setIsAddAccountDialogOpen(true);
+  };
 
   const handleAddAccount = () => {
-    // TODO: Implement Add Account functionality (e.g., open a modal or navigate to a new page)
-    toast({
-      title: "Feature Coming Soon",
-      description: "Adding new accounts will be available shortly.",
-    });
+    if (!newAccountName.trim()) {
+      toast({ title: "Error", description: "Account name cannot be empty.", variant: "destructive" });
+      return;
+    }
+     // Check for duplicate name (case-insensitive)
+     if (accounts.some(acc => acc.name.toLowerCase() === newAccountName.trim().toLowerCase())) {
+        toast({ title: "Error", description: "An account with this name already exists.", variant: "destructive" });
+        return;
+      }
+
+    setIsSavingAccount(true);
+    // Simulate adding account to mock data
+    setTimeout(() => {
+      const newAccount: Account = {
+        id: getNextAccountId(),
+        name: newAccountName.trim(),
+        balance: 0, // Initial balance is 0
+      };
+      if (!mockDb[userId]) {
+        mockDb[userId] = { accounts: [], transactions: [] };
+      }
+      mockDb[userId].accounts.push(newAccount);
+      setAccounts([...mockDb[userId].accounts]); // Update state
+
+      toast({
+        title: "Account Added",
+        description: `Account "${newAccount.name}" has been successfully added.`,
+      });
+      setIsSavingAccount(false);
+      setIsAddAccountDialogOpen(false);
+    }, 500); // Simulate save delay
   };
+
+  const openEditAccountDialog = (account: Account) => {
+    setAccountToEdit(account);
+    setEditAccountName(account.name); // Pre-fill current name
+    setIsEditAccountDialogOpen(true);
+  };
+
+  const handleEditAccount = () => {
+    if (!accountToEdit || !editAccountName.trim()) {
+        toast({ title: "Error", description: "Account name cannot be empty.", variant: "destructive" });
+        return;
+    }
+     // Check for duplicate name (excluding the account being edited)
+     if (accounts.some(acc => acc.id !== accountToEdit.id && acc.name.toLowerCase() === editAccountName.trim().toLowerCase())) {
+        toast({ title: "Error", description: "Another account with this name already exists.", variant: "destructive" });
+        return;
+      }
+
+    setIsSavingAccount(true);
+    // Simulate editing account in mock data
+    setTimeout(() => {
+      const accountIndex = mockDb[userId].accounts.findIndex(acc => acc.id === accountToEdit.id);
+      if (accountIndex !== -1) {
+         const updatedName = editAccountName.trim();
+         // Update account name
+         mockDb[userId].accounts[accountIndex].name = updatedName;
+
+         // Update the 'code' (linked account name) in all transactions referencing this account
+         mockDb[userId].transactions = mockDb[userId].transactions.map(t => {
+           if (t.code === accountToEdit.name) {
+             return { ...t, code: updatedName };
+           }
+           return t;
+         });
+
+         setAccounts([...mockDb[userId].accounts]); // Update state
+
+         toast({
+           title: "Account Updated",
+           description: `Account "${accountToEdit.name}" has been renamed to "${updatedName}". References updated.`,
+         });
+      } else {
+         toast({ title: "Error", description: "Account not found for editing.", variant: "destructive" });
+      }
+
+      setIsSavingAccount(false);
+      setIsEditAccountDialogOpen(false);
+      setAccountToEdit(null); // Clear editing state
+    }, 500); // Simulate save delay
+  };
+
+ const promptDeleteAccount = (account: Account) => {
+    setAccountToDelete(account);
+    // The AlertDialogTrigger handles opening the dialog
+  };
+
+  const handleDeleteAccount = () => {
+    if (!accountToDelete) return;
+
+    setIsLoadingAccounts(true); // Use loading state during deletion
+    // Simulate deleting account and its transactions from mock data
+    setTimeout(() => {
+      const accountIdToDelete = accountToDelete.id;
+      const accountName = accountToDelete.name;
+
+      // Filter out the account
+      mockDb[userId].accounts = mockDb[userId].accounts.filter(acc => acc.id !== accountIdToDelete);
+
+      // Filter out transactions belonging to the deleted account
+      // AND transactions linked TO the deleted account (via code)
+      const transactionsToDelete = mockDb[userId].transactions.filter(t => t.accountId === accountIdToDelete || t.code === accountName);
+      const slipsToDelete = transactionsToDelete.map(t => t.slipNumber);
+
+      // Remove transactions belonging to the account OR linked TO the account OR sharing a slip number with affected transactions
+      mockDb[userId].transactions = mockDb[userId].transactions.filter(t =>
+          t.accountId !== accountIdToDelete && // Not in the deleted account
+          t.code !== accountName && // Not linked TO the deleted account
+          !slipsToDelete.includes(t.slipNumber) // Not part of the same double-entry
+       );
+
+      // Recalculate balances for *all remaining* accounts (simplest for mock data)
+       mockDb[userId].accounts.forEach(acc => updateAccountBalance(acc.id, userId));
+
+      setAccounts([...mockDb[userId].accounts]); // Update state
+
+      toast({
+        title: "Account Deleted",
+        description: `Account "${accountName}" and its transactions have been removed.`,
+        variant: "destructive",
+      });
+      setIsLoadingAccounts(false);
+      setAccountToDelete(null); // Clear delete state
+    }, 500); // Simulate delete delay
+  };
+
+
+  // --- Other Handlers ---
 
   const handleViewAccount = (accountId: string) => {
     router.push(`/account/${accountId}`);
-  };
-
-  const handleEditAccount = (accountId: string) => {
-    // TODO: Implement Edit Account functionality
-    toast({
-      title: "Feature Coming Soon",
-      description: `Editing account ${accountId} will be available shortly.`,
-    });
-  };
-
-  const handleDeleteAccount = (accountId: string) => {
-    // TODO: Implement Delete Account functionality with confirmation
-    // This is a placeholder implementation
-    setAccounts(accounts.filter(acc => acc.id !== accountId));
-    toast({
-      title: "Account Deleted",
-      description: `Account ${accountId} has been successfully deleted.`,
-      variant: "destructive",
-    });
   };
 
   const handleLogout = async () => {
@@ -108,6 +234,8 @@ export default function DashboardPage() {
       toast({ title: "Logout Failed", description: "Could not log you out. Please try again.", variant: "destructive" });
     }
   };
+
+  // --- Render Logic ---
 
   if (loading || isLoadingAccounts) {
     return (
@@ -132,7 +260,7 @@ export default function DashboardPage() {
   }
 
   if (!user) {
-    return null; // Or a loading indicator, although useEffect should redirect
+    return null; // Should be redirected by useEffect
   }
 
   return (
@@ -144,7 +272,6 @@ export default function DashboardPage() {
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="outline" size="icon" className="overflow-hidden rounded-full">
-                   {/* Placeholder for user avatar or initial */}
                    <span className="sr-only">User menu</span>
                    {user.email?.charAt(0).toUpperCase() || 'U'}
                 </Button>
@@ -164,7 +291,7 @@ export default function DashboardPage() {
                 <CardTitle>Accounts Overview</CardTitle>
                 <CardDescription>Manage your financial accounts.</CardDescription>
               </div>
-              <Button onClick={handleAddAccount}>
+              <Button onClick={openAddAccountDialog}>
                 <PlusCircle className="mr-2 h-4 w-4" /> Add Account
               </Button>
             </div>
@@ -183,8 +310,9 @@ export default function DashboardPage() {
                   accounts.map((account) => (
                     <TableRow key={account.id}>
                       <TableCell className="font-medium">{account.name}</TableCell>
-                      <TableCell className="text-right">
-                        ${account.balance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      <TableCell className="text-right font-mono">
+                        {/* Display calculated/stored balance */}
+                        ${(account.balance ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </TableCell>
                       <TableCell>
                         <DropdownMenu>
@@ -198,34 +326,39 @@ export default function DashboardPage() {
                             <DropdownMenuItem onClick={() => handleViewAccount(account.id)}>
                               <Eye className="mr-2 h-4 w-4" /> View
                             </DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => handleEditAccount(account.id)}>
+                            <DropdownMenuItem onClick={() => openEditAccountDialog(account)}>
                               <Edit className="mr-2 h-4 w-4" /> Edit
                             </DropdownMenuItem>
                              <AlertDialog>
-                              <AlertDialogTrigger asChild>
-                                <DropdownMenuItem onSelect={(e) => e.preventDefault()}>
-                                  <Trash2 className="mr-2 h-4 w-4 text-destructive" /> Delete
-                                </DropdownMenuItem>
-                              </AlertDialogTrigger>
-                              <AlertDialogContent>
-                                <AlertDialogHeader>
-                                  <AlertDialogTitle>Are you absolutely sure?</AlertDialogTitle>
-                                  <AlertDialogDescription>
-                                    This action cannot be undone. This will permanently delete the account
-                                    and all its associated transactions.
-                                  </AlertDialogDescription>
-                                </AlertDialogHeader>
-                                <AlertDialogFooter>
-                                  <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                  <AlertDialogAction
-                                     variant="destructive"
-                                     onClick={() => handleDeleteAccount(account.id)}
-                                   >
-                                    Yes, delete account
-                                   </AlertDialogAction>
-                                </AlertDialogFooter>
-                              </AlertDialogContent>
-                            </AlertDialog>
+                               <AlertDialogTrigger asChild>
+                                 {/* Use onSelect to prevent menu close and trigger action */}
+                                 <DropdownMenuItem
+                                    onSelect={(e) => { e.preventDefault(); promptDeleteAccount(account); }}
+                                    className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+                                  >
+                                   <Trash2 className="mr-2 h-4 w-4" /> Delete
+                                 </DropdownMenuItem>
+                               </AlertDialogTrigger>
+                               {/* Delete Confirmation Dialog Content (Remains the same) */}
+                               <AlertDialogContent>
+                                 <AlertDialogHeader>
+                                   <AlertDialogTitle className="flex items-center"><AlertCircle className="text-destructive mr-2 h-5 w-5" />Are you absolutely sure?</AlertDialogTitle>
+                                   <AlertDialogDescription>
+                                     This action cannot be undone. This will permanently delete the account
+                                     <strong> "{accountToDelete?.name}"</strong> and all its associated transactions.
+                                   </AlertDialogDescription>
+                                 </AlertDialogHeader>
+                                 <AlertDialogFooter>
+                                   <AlertDialogCancel onClick={() => setAccountToDelete(null)}>Cancel</AlertDialogCancel>
+                                   <AlertDialogAction
+                                      variant="destructive"
+                                      onClick={handleDeleteAccount} // Call the actual delete handler
+                                    >
+                                     Yes, delete account
+                                    </AlertDialogAction>
+                                 </AlertDialogFooter>
+                               </AlertDialogContent>
+                             </AlertDialog>
                           </DropdownMenuContent>
                         </DropdownMenu>
                       </TableCell>
@@ -233,7 +366,7 @@ export default function DashboardPage() {
                   ))
                 ) : (
                   <TableRow>
-                    <TableCell colSpan={3} className="text-center">
+                    <TableCell colSpan={3} className="text-center h-24">
                       No accounts found. Add your first account!
                     </TableCell>
                   </TableRow>
@@ -248,6 +381,76 @@ export default function DashboardPage() {
           </CardFooter>
         </Card>
       </main>
+
+       {/* Add Account Dialog */}
+       <Dialog open={isAddAccountDialogOpen} onOpenChange={setIsAddAccountDialogOpen}>
+          <DialogContent className="sm:max-w-[425px]">
+            <DialogHeader>
+              <DialogTitle>Add New Account</DialogTitle>
+              <DialogDescription>
+                Enter the name for the new financial account.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="grid gap-4 py-4">
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label htmlFor="add-account-name" className="text-right">
+                  Name
+                </Label>
+                <Input
+                  id="add-account-name"
+                  value={newAccountName}
+                  onChange={(e) => setNewAccountName(e.target.value)}
+                  className="col-span-3"
+                  placeholder="e.g., Savings Account"
+                  disabled={isSavingAccount}
+                />
+              </div>
+            </div>
+            <DialogFooter>
+               <DialogClose asChild>
+                   <Button type="button" variant="outline" disabled={isSavingAccount}>Cancel</Button>
+               </DialogClose>
+              <Button type="button" onClick={handleAddAccount} disabled={isSavingAccount || !newAccountName.trim()}>
+                 {isSavingAccount ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : "Save Account"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+       </Dialog>
+
+       {/* Edit Account Dialog */}
+        <Dialog open={isEditAccountDialogOpen} onOpenChange={(open) => { if(!isSavingAccount) { setIsEditAccountDialogOpen(open); if(!open) setAccountToEdit(null); } }}>
+          <DialogContent className="sm:max-w-[425px]">
+            <DialogHeader>
+              <DialogTitle>Edit Account</DialogTitle>
+              <DialogDescription>
+                Update the name for the account: <strong>{accountToEdit?.name}</strong>.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="grid gap-4 py-4">
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label htmlFor="edit-account-name" className="text-right">
+                  New Name
+                </Label>
+                <Input
+                  id="edit-account-name"
+                  value={editAccountName}
+                  onChange={(e) => setEditAccountName(e.target.value)}
+                  className="col-span-3"
+                  disabled={isSavingAccount}
+                />
+              </div>
+            </div>
+            <DialogFooter>
+              <DialogClose asChild>
+                  <Button type="button" variant="outline" disabled={isSavingAccount}>Cancel</Button>
+              </DialogClose>
+              <Button type="button" onClick={handleEditAccount} disabled={isSavingAccount || !editAccountName.trim() || editAccountName.trim() === accountToEdit?.name}>
+                 {isSavingAccount ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : "Save Changes"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+       </Dialog>
+
     </div>
   );
 }

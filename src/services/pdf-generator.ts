@@ -9,6 +9,32 @@ export interface PdfDocument {
 }
 
 /**
+ * Converts a string to a Base64 string, suitable for browser environments.
+ * Handles potential issues with UTF-8 characters.
+ * @param str The string to encode.
+ * @returns The Base64 encoded string.
+ */
+function safeBtoa(str: string): string {
+    try {
+        // Use TextEncoder for robust UTF-8 handling before btoa
+        const bytes = new TextEncoder().encode(str);
+        const binString = Array.from(bytes, (byte) => String.fromCodePoint(byte)).join("");
+        return btoa(binString);
+    } catch (e) {
+        console.error("Error in safeBtoa encoding:", e);
+        // Fallback for environments without TextEncoder or potential issues
+        try {
+          return btoa(unescape(encodeURIComponent(str)));
+        } catch (e2) {
+           console.error("Fallback btoa failed:", e2);
+           // Last resort: very basic btoa, might corrupt non-ASCII
+           return btoa(str);
+        }
+    }
+}
+
+
+/**
  * Asynchronously generates a PDF document from given HTML content.
  *
  * @param htmlContent The HTML content to be converted to PDF.
@@ -20,14 +46,13 @@ export async function generatePdf(htmlContent: string): Promise<PdfDocument> {
   // TODO: Implement this by calling a real PDF generation service/library (e.g., Puppeteer on a server, jsPDF on client, or an external API).
   // The current implementation is a placeholder and will simulate a delay.
 
-  console.warn("PDF generation is not implemented. Returning placeholder data.");
+  console.warn("PDF generation is not implemented. Returning placeholder data (Base64 encoded HTML).");
   await new Promise(resolve => setTimeout(resolve, 500)); // Simulate processing time
 
-  // Create a very basic placeholder PDF structure (not a real PDF)
-  // For a slightly better placeholder, encode the HTML itself
+  // Create a placeholder Base64 by encoding the HTML itself using a safer method
   const placeholderBase64 = typeof Buffer !== 'undefined'
     ? Buffer.from(htmlContent).toString('base64') // Use Buffer if on Node.js-like env
-    : btoa(unescape(encodeURIComponent(htmlContent))); // Use btoa for browser env
+    : safeBtoa(htmlContent); // Use safeBtoa for browser env
 
 
   return {
@@ -58,8 +83,12 @@ export function downloadPdf(base64Content: string, filename: string) {
         }
         const byteArray = new Uint8Array(byteNumbers);
 
-        // Determine MIME type - assume application/pdf, but could be inferred or passed if needed
-        const mimeType = 'application/pdf'; // Or detect based on content if possible
+        // Determine MIME type - assume application/pdf for now
+        // WARNING: Since we are encoding HTML as base64 in the mock, downloading it as application/pdf
+        // will result in a corrupted file. A real implementation generating actual PDF bytes is needed.
+        // For the *mock* to download the HTML source itself, you could use 'text/html'.
+        // const mimeType = 'text/html'; // Use this to download the source HTML in the mock
+        const mimeType = 'application/pdf'; // Keep as PDF for the intended final functionality
 
         // Create Blob and URL
         const blob = new Blob([byteArray], { type: mimeType });

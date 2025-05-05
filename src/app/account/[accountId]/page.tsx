@@ -1,3 +1,4 @@
+// src/app/account/[accountId]/page.tsx
 "use client";
 
 import * as React from "react";
@@ -5,7 +6,7 @@ import { useParams, useRouter } from "next/navigation";
 import { useAuth } from "@/lib/firebase/client";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
-import { ArrowLeft, PlusCircle, Edit, Trash2, FileText, MoreVertical, Loader2, AlertCircle, CheckCircle } from "lucide-react";
+import { ArrowLeft, PlusCircle, Edit, Trash2, FileText, MoreVertical, Loader2, AlertCircle, CheckCircle, Calendar as CalendarIcon } from "lucide-react";
 import {
   Table,
   TableBody,
@@ -18,7 +19,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
+  // DropdownMenuSeparator, // Not used currently
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -31,50 +32,45 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import {
+   Dialog,
+   DialogContent,
+   DialogDescription,
+   DialogHeader,
+   DialogTitle,
+   DialogFooter,
+   DialogClose,
+ } from "@/components/ui/dialog";
+ import {
+   Select,
+   SelectContent,
+   SelectItem,
+   SelectTrigger,
+   SelectValue,
+ } from "@/components/ui/select";
+ import { Input } from "@/components/ui/input";
+ import { Label } from "@/components/ui/label";
+ import { Textarea } from "@/components/ui/textarea";
+ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+ import { Calendar } from "@/components/ui/calendar";
 import { useToast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import { cn } from "@/lib/utils"; // Import cn for conditional classes
-import { generatePdf, downloadPdf } from "@/services/pdf-generator"; // Import actual service functions
+import { cn } from "@/lib/utils";
+import { generatePdf, downloadPdf } from "@/services/pdf-generator";
+import type { Account, Transaction, TransactionWithBalance } from "@/types";
+import {
+    mockDb,
+    calculateRunningBalance,
+    updateAccountBalance,
+    getNextTransactionNumber,
+    getNextTransactionId,
+    slipNumberExists
+} from "@/lib/mock-data";
+import { format } from "date-fns";
 
-// Mock data for transactions - replace with actual data fetching from Firestore
-interface Transaction {
-  id: string;
-  number: number; // Unique transaction identifier within the account
-  date: string; // Store as ISO string or Firestore Timestamp
-  description: string;
-  slipNumber: string; // Unique identifier across the application
-  debit?: number;
-  credit?: number;
-  code?: string; // Linked account name
-}
 
-// Interface for transaction with calculated balance
-interface TransactionWithBalance extends Transaction {
-    balance: number;
-}
-
-// Mock account data (fetch based on accountId)
-const mockAccounts = {
-  "1": { name: "Cash", transactions: [
-    { id: "t1", number: 1, date: "2024-07-20", description: "Initial Balance", slipNumber: "S001", credit: 2000.00 },
-    { id: "t2", number: 2, date: "2024-07-21", description: "Office Supplies Purchase", slipNumber: "S002", debit: 150.50, code: "Office Supplies" },
-    { id: "t3", number: 3, date: "2024-07-22", description: "Client Payment Received", slipNumber: "S003", credit: 500.25, code: "Accounts Receivable" },
-    { id: "t7", number: 4, date: "2024-07-23", description: "Rent Payment", slipNumber: "S005", debit: 800.00, code: "Rent Expense" },
-  ]},
-  "2": { name: "Accounts Receivable", transactions: [
-     { id: "t4", number: 1, date: "2024-07-19", description: "Invoice #INV001", slipNumber: "S004", debit: 5200.00 },
-     { id: "t5", number: 2, date: "2024-07-22", description: "Payment for INV001", slipNumber: "S003", credit: 500.25 }, // Linked via slipNumber S003
-  ]},
-   "3": { name: "Office Supplies", transactions: [
-     { id: "t6", number: 1, date: "2024-07-21", description: "Purchase from Cash", slipNumber: "S002", credit: 150.50 }, // Linked via slipNumber S002
-   ]},
-   "4": { name: "Rent Expense", transactions: [
-       { id: "t8", number: 1, date: "2024-07-23", description: "Paid from Cash", slipNumber: "S005", credit: 800.00 }, // Linked via slipNumber S005
-   ]},
-};
-
-// Function to generate PDF (uses pdf-generator service)
+// Function to generate PDF (uses pdf-generator service) - remains the same
 async function generateAccountPdf(accountName: string, transactions: TransactionWithBalance[]) {
   console.log(`Generating PDF for account: ${accountName}`);
   console.log("Including Transactions:", transactions.map(t => t.slipNumber));
@@ -131,8 +127,6 @@ async function generateAccountPdf(accountName: string, transactions: Transaction
     </html>
   `;
 
-  console.log("HTML Content for PDF:", htmlContent);
-
   try {
     const pdfDoc = await generatePdf(htmlContent); // Call the actual service
     return pdfDoc;
@@ -148,80 +142,217 @@ export default function AccountDetailPage() {
   const { user, loading: authLoading } = useAuth();
   const router = useRouter();
   const { toast } = useToast();
-  const [accountName, setAccountName] = React.useState<string>("");
+  const [account, setAccount] = React.useState<Account | null>(null);
   const [transactionsWithBalance, setTransactionsWithBalance] = React.useState<TransactionWithBalance[]>([]);
+  const [allAccounts, setAllAccounts] = React.useState<Account[]>([]); // For dropdowns
   const [isLoading, setIsLoading] = React.useState(true);
   const [isPdfGenerating, setIsPdfGenerating] = React.useState(false);
-  const [deleteTarget, setDeleteTarget] = React.useState<{id: string; slipNumber: string; code?: string} | null>(null);
+  const [deleteTarget, setDeleteTarget] = React.useState<TransactionWithBalance | null>(null);
   const [showFirstDeleteConfirm, setShowFirstDeleteConfirm] = React.useState(false);
   const [showSecondDeleteConfirm, setShowSecondDeleteConfirm] = React.useState(false);
-  const [editTarget, setEditTarget] = React.useState<Transaction | null>(null);
-  const [showEditConfirm, setShowEditConfirm] = React.useState(false);
-  const [selectedTransactionId, setSelectedTransactionId] = React.useState<string | null>(null); // State for selected row
+  const [editTarget, setEditTarget] = React.useState<Transaction | null>(null); // Keep simple Transaction for edit form
+  const [showEditConfirm, setShowEditConfirm] = React.useState(false); // Dialog before showing full edit form
+  const [isAddTransactionDialogOpen, setIsAddTransactionDialogOpen] = React.useState(false);
+  const [isEditTransactionDialogOpen, setIsEditTransactionDialogOpen] = React.useState(false); // The actual edit form dialog
+  const [isSavingTransaction, setIsSavingTransaction] = React.useState(false);
+  const [selectedTransactionId, setSelectedTransactionId] = React.useState<string | null>(null);
 
-  // Function to calculate running balance
-  const calculateRunningBalance = (transactions: Transaction[]): TransactionWithBalance[] => {
-      let currentBalance = 0;
-      return transactions
-          .sort((a, b) => a.number - b.number) // Ensure transactions are sorted by number
-          .map(t => {
-              currentBalance = currentBalance + (t.credit || 0) - (t.debit || 0);
-              return { ...t, balance: currentBalance };
-          });
-  };
+  // Add/Edit Transaction Form State
+   const [transactionDate, setTransactionDate] = React.useState<Date | undefined>(new Date());
+   const [transactionDesc, setTransactionDesc] = React.useState("");
+   const [transactionSlip, setTransactionSlip] = React.useState("");
+   const [transactionAmount, setTransactionAmount] = React.useState<number | string>("");
+   const [transactionType, setTransactionType] = React.useState<"debit" | "credit">("debit");
+   const [linkedAccountId, setLinkedAccountId] = React.useState<string>("");
+
+
+  const userId = user?.uid || "user1"; // Use actual UID if available, else default mock user
+
+  // --- Data Fetching and Calculation ---
+  const loadAccountData = React.useCallback(() => {
+    if (!accountId || !mockDb[userId]) {
+       toast({ title: "Error", description: "Account data not available.", variant: "destructive" });
+       router.push("/dashboard");
+       return;
+    }
+     setIsLoading(true);
+     setSelectedTransactionId(null); // Reset selection on load/reload
+
+     // Simulate fetching
+     setTimeout(() => {
+       const currentAccount = mockDb[userId].accounts.find(acc => acc.id === accountId);
+       if (currentAccount) {
+         setAccount(currentAccount);
+         setAllAccounts(mockDb[userId].accounts.filter(acc => acc.id !== accountId)); // Other accounts for linking
+
+         // Calculate balances for the current account
+         const { transactions, finalBalance } = calculateRunningBalance(accountId, userId);
+         setTransactionsWithBalance(transactions);
+         // Update the main account object's balance (optional, might not be needed if always calculated)
+         setAccount(prev => prev ? { ...prev, balance: finalBalance } : null);
+
+       } else {
+         toast({ title: "Error", description: "Account not found.", variant: "destructive" });
+         router.push("/dashboard"); // Redirect if account doesn't exist
+       }
+       setIsLoading(false);
+     }, 500); // Simulate network delay
+  }, [accountId, userId, router, toast]);
 
   React.useEffect(() => {
     if (!authLoading && !user) {
       router.push("/"); // Redirect if not logged in
     } else if (user && accountId) {
-      // Simulate fetching account details and transactions
-      setIsLoading(true);
-      setSelectedTransactionId(null); // Reset selection on account change
-      setTimeout(() => {
-        const accountData = (mockAccounts as any)[accountId];
-        if (accountData) {
-          setAccountName(accountData.name);
-          // Calculate balance after fetching
-          const calculatedTransactions = calculateRunningBalance(accountData.transactions);
-          setTransactionsWithBalance(calculatedTransactions);
-        } else {
-          toast({ title: "Error", description: "Account not found.", variant: "destructive" });
-          router.push("/dashboard"); // Redirect if account doesn't exist
-        }
-        setIsLoading(false);
-      }, 1000); // Simulate network delay
+        loadAccountData();
     }
-  }, [user, authLoading, accountId, router, toast]);
+     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, authLoading, accountId, router]); // loadAccountData is stable
 
-   const handleAddTransaction = () => {
-    // TODO: Implement Add Transaction functionality (e.g., open a modal form)
-    // Should handle duplicate slip number check before saving
-    // After adding, recalculate balances: setTransactionsWithBalance(calculateRunningBalance(updatedTransactions))
-    toast({
-      title: "Feature Coming Soon",
-      description: "Adding new transactions will be available shortly.",
-    });
+  // --- Transaction Actions ---
+
+  const openAddTransactionDialog = () => {
+      // Reset form fields
+      setTransactionDate(new Date());
+      setTransactionDesc("");
+      setTransactionSlip(""); // TODO: Suggest next slip number?
+      setTransactionAmount("");
+      setTransactionType("debit");
+      setLinkedAccountId("");
+      setIsAddTransactionDialogOpen(true);
   };
+
+ const handleAddTransaction = () => {
+     // Validation
+     if (!transactionDate || !transactionDesc.trim() || !transactionSlip.trim() || !transactionAmount || !linkedAccountId) {
+       toast({ title: "Error", description: "Please fill all transaction fields.", variant: "destructive" });
+       return;
+     }
+     const amount = parseFloat(transactionAmount.toString());
+     if (isNaN(amount) || amount <= 0) {
+       toast({ title: "Error", description: "Please enter a valid positive amount.", variant: "destructive" });
+       return;
+     }
+      const slip = transactionSlip.trim();
+      if (slipNumberExists(slip, userId)) {
+         toast({ title: "Error", description: `Slip number "${slip}" already exists. Please use a unique one.`, variant: "destructive" });
+         return;
+     }
+
+     setIsSavingTransaction(true);
+     // Simulate adding transaction to mock data (Double Entry)
+     setTimeout(() => {
+         const currentAccId = accountId!;
+         const linkedAccId = linkedAccountId;
+         const linkedAcc = mockDb[userId].accounts.find(a => a.id === linkedAccId);
+         if(!linkedAcc || !account) { // Add check for current account existence
+             toast({ title: "Error", description: "Account details are missing.", variant: "destructive" });
+             setIsSavingTransaction(false);
+             return;
+         }
+
+         const dateISO = transactionDate.toISOString();
+         const desc = transactionDesc.trim();
+         const currentAccName = account.name;
+         const linkedAccName = linkedAcc.name;
+
+         // Transaction 1 (Current Account)
+         const t1: Transaction = {
+             id: getNextTransactionId(),
+             accountId: currentAccId,
+             number: getNextTransactionNumber(currentAccId, userId),
+             date: dateISO,
+             description: desc,
+             slipNumber: slip,
+             code: linkedAccName, // Link to the other account
+             [transactionType]: amount, // Set debit or credit based on selection
+         };
+
+         // Transaction 2 (Linked Account - opposite entry)
+         const t2: Transaction = {
+             id: getNextTransactionId(),
+             accountId: linkedAccId,
+             number: getNextTransactionNumber(linkedAccId, userId),
+             date: dateISO,
+             description: desc, // Can customize description slightly if needed, e.g., "From/To [CurrentAccountName]"
+             slipNumber: slip,
+             code: currentAccName, // Link back to the current account
+             // Opposite entry type
+             [transactionType === 'debit' ? 'credit' : 'debit']: amount,
+         };
+
+         // Add both transactions to mock DB
+         mockDb[userId].transactions.push(t1, t2);
+
+         // Recalculate balances for BOTH accounts
+         updateAccountBalance(currentAccId, userId);
+         updateAccountBalance(linkedAccId, userId);
+
+         // Refresh data for the current page
+         loadAccountData();
+
+         toast({
+             title: "Transaction Added",
+             description: `Transaction ${slip} recorded in ${currentAccName} and ${linkedAccName}.`,
+         });
+         setIsSavingTransaction(false);
+         setIsAddTransactionDialogOpen(false);
+     }, 500); // Simulate save delay
+ };
+
 
   const handleEditTransaction = (transaction: Transaction) => {
+    // TODO: Implement Edit functionality fully.
+    // This is complex with mock data linking.
+    // 1. Set editTarget (simple transaction)
+    // 2. Open a *confirmation* dialog (showEditConfirm) - existing
+    // 3. If confirmed, open the *actual edit form* dialog (isEditTransactionDialogOpen)
+    // 4. Pre-fill the edit form with data from editTarget
+    // 5. On save:
+    //    - Find *both* transactions (current and linked) by slipNumber in mockDb.
+    //    - Update details in both. Be careful if amount/type/linked account changes.
+    //    - Recalculate balances for *both* affected accounts.
+    //    - Reload data.
     setEditTarget(transaction);
-    setShowEditConfirm(true);
+    setShowEditConfirm(true); // Show the initial confirmation dialog
   };
 
-  const confirmEditTransaction = () => {
-     setShowEditConfirm(false);
-     // TODO: Open edit modal/form with data from editTarget
-     // On save, update both the current transaction and the linked one if 'code' exists
-     // After editing, recalculate balances: setTransactionsWithBalance(calculateRunningBalance(updatedTransactions))
-     toast({
-       title: "Edit Confirmed (WIP)",
-       description: `Editing transaction ${editTarget?.slipNumber}. Implementation pending.`,
-     });
-     setEditTarget(null); // Reset edit target
+  const confirmEditIntent = () => {
+     setShowEditConfirm(false); // Close confirmation dialog
+     if (editTarget) {
+         // --- Pre-fill Edit Form State ---
+         setTransactionDate(new Date(editTarget.date)); // Assuming date is stored as string/timestamp
+         setTransactionDesc(editTarget.description);
+         setTransactionSlip(editTarget.slipNumber);
+         const amountValue = editTarget.debit ?? editTarget.credit ?? 0;
+         setTransactionAmount(amountValue);
+         setTransactionType(editTarget.debit ? "debit" : "credit");
+         // Find the linked account ID based on the 'code' (name)
+         const linkedAcc = allAccounts.find(acc => acc.name === editTarget?.code);
+         setLinkedAccountId(linkedAcc?.id || "");
+         // --- Open the Actual Edit Dialog ---
+         setIsEditTransactionDialogOpen(true);
+     }
   };
 
-  const handleDeleteTransaction = (transaction: Transaction) => {
-    setDeleteTarget({ id: transaction.id, slipNumber: transaction.slipNumber, code: transaction.code });
+  const handleSaveEditedTransaction = () => {
+        // TODO: Implement the actual saving logic for edited transactions as described in handleEditTransaction comments.
+        // This part is complex due to mock data manipulation.
+        setIsSavingTransaction(true);
+        setTimeout(() => {
+            toast({
+               title: "Edit Not Implemented",
+               description: "Saving edited transactions is not fully functional in this mock setup.",
+               variant: "default", // Use default, not destructive
+             });
+            setIsSavingTransaction(false);
+            setIsEditTransactionDialogOpen(false); // Close edit form
+            setEditTarget(null); // Reset edit target
+         }, 500);
+   };
+
+
+  const handleDeleteTransaction = (transaction: TransactionWithBalance) => {
+    setDeleteTarget(transaction);
     setShowFirstDeleteConfirm(true);
   };
 
@@ -233,67 +364,69 @@ export default function AccountDetailPage() {
    const confirmSecondDelete = () => {
      setShowSecondDeleteConfirm(false);
      if (deleteTarget) {
-       // TODO: Implement actual deletion logic in Firestore
-       // This includes finding and deleting the linked transaction if 'code' exists
-       // IMPORTANT: Need to handle cascading deletes or updates based on double-entry rules.
-       // For now, just remove from the current view and log the linked action.
-       const slipToDelete = deleteTarget.slipNumber;
-       const linkedAccountCode = deleteTarget.code;
+        setIsLoading(true); // Show loading while deleting
+       // Simulate deletion from mock data
+       setTimeout(() => {
+         const slipToDelete = deleteTarget.slipNumber;
+         const currentAccountId = deleteTarget.accountId;
+         const linkedAccountName = deleteTarget.code;
 
-       // Update state and recalculate balances
-       const updatedTransactions = transactionsWithBalance.filter(t => t.id !== deleteTarget.id);
-       setTransactionsWithBalance(calculateRunningBalance(updatedTransactions)); // Recalculate balance after deletion
+         // Find the ID of the linked account based on its name (code)
+         const linkedAccount = mockDb[userId].accounts.find(acc => acc.name === linkedAccountName);
+         const linkedAccountId = linkedAccount?.id;
 
-       if (selectedTransactionId === deleteTarget.id) {
-         setSelectedTransactionId(null); // Deselect if the deleted row was selected
-       }
+         // Filter out both transactions (current and linked) by slip number
+         mockDb[userId].transactions = mockDb[userId].transactions.filter(t => t.slipNumber !== slipToDelete);
 
-       toast({
-         title: "Transaction Deleted",
-         description: `Transaction ${slipToDelete} removed from ${accountName}.`,
-         variant: "destructive",
-       });
+         // Recalculate balances for BOTH accounts
+         updateAccountBalance(currentAccountId, userId);
+         if (linkedAccountId) {
+           updateAccountBalance(linkedAccountId, userId);
+         }
 
-       // Simulate finding and deleting linked transaction
-       if (linkedAccountCode) {
-         console.log(`Need to delete transaction with slip ${slipToDelete} in account ${linkedAccountCode}`);
-         // In a real app: Find account by name `linkedAccountCode`, find transaction by `slipToDelete`, delete it.
-         // Example of updating mock data (not ideal for real app):
-         Object.keys(mockAccounts).forEach(key => {
-             const acc = (mockAccounts as any)[key];
-             if(acc.name === linkedAccountCode) {
-                 acc.transactions = acc.transactions.filter((t: Transaction) => t.slipNumber !== slipToDelete);
-                 console.log(`Simulated deletion from linked account: ${linkedAccountCode}`);
-                 // NOTE: Balances in the linked account would also need recalculation in a real app.
-             }
+         // Refresh data for the current page
+         loadAccountData(); // This will set isLoading back to false
+
+         toast({
+           title: "Transaction Deleted",
+           description: `Transaction ${slipToDelete} and its linked entry removed. Balances updated.`,
+           variant: "destructive",
          });
-       } else {
-          console.log(`Transaction ${slipToDelete} had no linked account code.`);
-       }
+
+         if (selectedTransactionId === deleteTarget.id) {
+             setSelectedTransactionId(null); // Deselect if the deleted row was selected
+         }
+         setDeleteTarget(null); // Reset delete target
+      }, 500); // Simulate deletion delay
+     } else {
+         setDeleteTarget(null); // Reset delete target if it was somehow null
      }
-     setDeleteTarget(null); // Reset delete target
    };
 
+  // --- PDF Generation ---
   const handleGeneratePdf = async (type: 'whole' | 'upto') => {
      setIsPdfGenerating(true);
      let transactionsToInclude: TransactionWithBalance[] = [];
      let toastMessage = "";
-     let filename = `Account_${accountName.replace(/\s+/g, '_')}_${new Date().toISOString().split('T')[0]}.pdf`;
-
+     let filename = `Account_${account?.name?.replace(/\s+/g, '_')}_${new Date().toISOString().split('T')[0]}.pdf`;
 
      try {
+       if (transactionsWithBalance.length === 0) {
+           throw new Error("No transactions available to generate PDF.");
+       }
+
        if (type === 'whole') {
-         transactionsToInclude = transactionsWithBalance; // Use all transactions with calculated balance
-         toastMessage = `PDF for the whole account '${accountName}' is being generated.`;
-         filename = `Account_${accountName.replace(/\s+/g, '_')}_Whole_${new Date().toISOString().split('T')[0]}.pdf`;
+         transactionsToInclude = transactionsWithBalance; // Use all currently displayed transactions
+         toastMessage = `PDF for the whole account '${account?.name}' is being generated.`;
+         filename = `Account_${account?.name?.replace(/\s+/g, '_')}_Whole_${new Date().toISOString().split('T')[0]}.pdf`;
        } else if (type === 'upto' && selectedTransactionId) {
           const selectedIndex = transactionsWithBalance.findIndex(t => t.id === selectedTransactionId);
           if (selectedIndex !== -1) {
              // Get all transactions up to and including the selected one
              transactionsToInclude = transactionsWithBalance.slice(0, selectedIndex + 1);
              const selectedSlip = transactionsWithBalance[selectedIndex].slipNumber;
-             toastMessage = `PDF for '${accountName}' up to transaction ${selectedSlip} is being generated.`;
-             filename = `Account_${accountName.replace(/\s+/g, '_')}_Upto_${selectedSlip}_${new Date().toISOString().split('T')[0]}.pdf`;
+             toastMessage = `PDF for '${account?.name}' up to transaction ${selectedSlip} is being generated.`;
+             filename = `Account_${account?.name?.replace(/\s+/g, '_')}_Upto_${selectedSlip}_${new Date().toISOString().split('T')[0]}.pdf`;
           } else {
              throw new Error("Selected transaction not found.");
           }
@@ -304,11 +437,11 @@ export default function AccountDetailPage() {
        }
 
        if (transactionsToInclude.length === 0) {
-          throw new Error("No transactions available to generate PDF.");
+          throw new Error("No transactions selected to generate PDF.");
        }
 
        toast({ title: "Generating PDF...", description: toastMessage });
-       const pdfDoc = await generateAccountPdf(accountName, transactionsToInclude);
+       const pdfDoc = await generateAccountPdf(account?.name || "Unknown Account", transactionsToInclude);
        downloadPdf(pdfDoc.content, filename); // Trigger download using helper
        toast({ title: "PDF Ready", description: `PDF '${filename}' generated and download started.` });
 
@@ -356,23 +489,23 @@ export default function AccountDetailPage() {
     );
   }
 
-  if (!user) return null; // Should be redirected by useEffect
+  if (!user || !account) return null; // Should be redirected or handled by loading state
 
   return (
     <div className="flex min-h-screen flex-col bg-muted/40 p-4">
        <main className="flex-1 md:gap-8">
-         <Card className="w-full max-w-7xl mx-auto"> {/* Increased max-w for new column */}
+         <Card className="w-full max-w-7xl mx-auto">
            <CardHeader>
              <div className="flex items-center gap-4 mb-2">
                 <Button variant="outline" size="icon" onClick={() => router.back()}>
                     <ArrowLeft className="h-4 w-4" />
                     <span className="sr-only">Back</span>
                 </Button>
-                <CardTitle className="text-2xl">{accountName || "Account Details"}</CardTitle>
+                <CardTitle className="text-2xl">{account?.name || "Account Details"}</CardTitle>
              </div>
              <CardDescription>
                  View and manage transactions for this account. Current Balance:
-                 <Badge variant={currentBalance >= 0 ? "secondary" : "destructive"} className="ml-2">
+                 <Badge variant={currentBalance >= 0 ? "secondary" : "destructive"} className="ml-2 font-mono">
                      ${currentBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                  </Badge>
                   {selectedTransactionId && <Badge variant="outline" className="ml-2">Row Selected</Badge>}
@@ -382,12 +515,12 @@ export default function AccountDetailPage() {
            <CardContent>
               <div className="flex justify-between items-center mb-4">
                  <div className="flex gap-2">
-                    <Button onClick={handleAddTransaction}>
+                    <Button onClick={openAddTransactionDialog}>
                        <PlusCircle className="mr-2 h-4 w-4" /> Add Transaction
                     </Button>
                      <DropdownMenu>
                       <DropdownMenuTrigger asChild>
-                         <Button variant="outline" disabled={isPdfGenerating}>
+                         <Button variant="outline" disabled={isPdfGenerating || transactionsWithBalance.length === 0}>
                            {isPdfGenerating ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileText className="mr-2 h-4 w-4" />}
                            Create PDF
                           </Button>
@@ -401,7 +534,7 @@ export default function AccountDetailPage() {
                           <DropdownMenuItem
                               onClick={() => handleGeneratePdf('upto')}
                               disabled={!selectedTransactionId || isPdfGenerating}
-                              title={!selectedTransactionId ? "Select a row first" : undefined}>
+                              title={!selectedTransactionId ? "Select a row first" : `Generate up to Slip No. ${transactionsWithBalance.find(t=>t.id===selectedTransactionId)?.slipNumber}`}>
                              Up to Selected Line
                           </DropdownMenuItem>
                        </DropdownMenuContent>
@@ -419,7 +552,7 @@ export default function AccountDetailPage() {
                    <TableHead className="w-[100px]">Slip No.</TableHead>
                    <TableHead className="text-right w-[120px]">Debit</TableHead>
                    <TableHead className="text-right w-[120px]">Credit</TableHead>
-                   <TableHead className="text-right w-[130px]">Balance</TableHead> {/* Added Balance Header */}
+                   <TableHead className="text-right w-[130px]">Balance</TableHead>
                    <TableHead className="w-[150px]">Code (Linked Acct)</TableHead>
                    <TableHead className="w-[80px]">Actions</TableHead>
                  </TableRow>
@@ -431,15 +564,15 @@ export default function AccountDetailPage() {
                        key={t.id}
                        onClick={() => handleRowClick(t.id)}
                        className={cn(
-                         "cursor-pointer hover:bg-muted/80", // General hover effect
-                         selectedTransactionId === t.id && "bg-primary/10 hover:bg-primary/15" // Selected style
+                         "cursor-pointer hover:bg-muted/80",
+                         selectedTransactionId === t.id && "bg-primary/10 hover:bg-primary/15"
                        )}
                        aria-selected={selectedTransactionId === t.id}
                       >
                        <TableCell>
-                          <div className="flex items-center gap-2">
-                             {selectedTransactionId === t.id && <CheckCircle className="h-4 w-4 text-primary" />}
-                             {t.number}
+                          <div className="flex items-center gap-1">
+                             {selectedTransactionId === t.id && <CheckCircle className="h-3 w-3 text-primary flex-shrink-0" />}
+                             <span className="flex-grow">{t.number}</span>
                           </div>
                        </TableCell>
                        <TableCell>{new Date(t.date).toLocaleDateString()}</TableCell>
@@ -451,12 +584,11 @@ export default function AccountDetailPage() {
                        <TableCell className="text-right font-mono">
                           {t.credit ? `$${t.credit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "-"}
                        </TableCell>
-                       {/* Added Balance Cell */}
                        <TableCell className="text-right font-mono">
                           {`$${t.balance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
                        </TableCell>
                        <TableCell>{t.code || "-"}</TableCell>
-                       <TableCell onClick={(e) => e.stopPropagation()} className="cursor-default"> {/* Prevent row selection when clicking actions */}
+                       <TableCell onClick={(e) => e.stopPropagation()} className="cursor-default">
                          <DropdownMenu>
                            <DropdownMenuTrigger asChild>
                              <Button aria-haspopup="true" size="icon" variant="ghost">
@@ -466,7 +598,7 @@ export default function AccountDetailPage() {
                            </DropdownMenuTrigger>
                            <DropdownMenuContent align="end">
                              <DropdownMenuItem onClick={(e) => {e.stopPropagation(); handleEditTransaction(t); }}>
-                               <Edit className="mr-2 h-4 w-4" /> Edit
+                               <Edit className="mr-2 h-4 w-4" /> Edit (WIP)
                              </DropdownMenuItem>
                              <DropdownMenuItem
                                 onSelect={(e) => { e.preventDefault(); e.stopPropagation(); handleDeleteTransaction(t); }}
@@ -481,7 +613,7 @@ export default function AccountDetailPage() {
                    ))
                  ) : (
                    <TableRow>
-                     <TableCell colSpan={9} className="text-center h-24"> {/* Updated colspan */}
+                     <TableCell colSpan={9} className="text-center h-24">
                        No transactions found for this account.
                      </TableCell>
                    </TableRow>
@@ -497,24 +629,276 @@ export default function AccountDetailPage() {
          </Card>
        </main>
 
-       {/* Edit Confirmation Dialog */}
+       {/* --- Dialogs --- */}
+
+       {/* Add Transaction Dialog */}
+       <Dialog open={isAddTransactionDialogOpen} onOpenChange={(open) => { if(!isSavingTransaction) setIsAddTransactionDialogOpen(open);}}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Add Transaction to {account?.name}</DialogTitle>
+              <DialogDescription>
+                Enter details for the new transaction. A corresponding entry will be created in the linked account.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="grid gap-4 py-4">
+                 {/* Date */}
+                 <div className="grid grid-cols-4 items-center gap-4">
+                     <Label htmlFor="date" className="text-right">Date</Label>
+                      <Popover>
+                         <PopoverTrigger asChild>
+                             <Button
+                                id="date"
+                                variant={"outline"}
+                                className={cn(
+                                     "w-[280px] justify-start text-left font-normal col-span-3", // Adjusted width via w-[]
+                                     !transactionDate && "text-muted-foreground"
+                                )}
+                                disabled={isSavingTransaction}
+                             >
+                                 <CalendarIcon className="mr-2 h-4 w-4" />
+                                 {transactionDate ? format(transactionDate, "PPP") : <span>Pick a date</span>}
+                              </Button>
+                         </PopoverTrigger>
+                         <PopoverContent className="w-auto p-0">
+                             <Calendar
+                                 mode="single"
+                                 selected={transactionDate}
+                                 onSelect={setTransactionDate}
+                                 initialFocus
+                             />
+                         </PopoverContent>
+                      </Popover>
+                 </div>
+                  {/* Description */}
+                 <div className="grid grid-cols-4 items-center gap-4">
+                    <Label htmlFor="description" className="text-right">Description</Label>
+                    <Textarea
+                        id="description"
+                        value={transactionDesc}
+                        onChange={(e) => setTransactionDesc(e.target.value)}
+                        className="col-span-3"
+                        placeholder="e.g., Payment for invoice #123"
+                        disabled={isSavingTransaction}
+                    />
+                 </div>
+                 {/* Slip Number */}
+                 <div className="grid grid-cols-4 items-center gap-4">
+                     <Label htmlFor="slip" className="text-right">Slip No.</Label>
+                     <Input
+                         id="slip"
+                         value={transactionSlip}
+                         onChange={(e) => setTransactionSlip(e.target.value)}
+                         className="col-span-3"
+                         placeholder="Unique slip number"
+                         disabled={isSavingTransaction}
+                     />
+                 </div>
+                  {/* Amount & Type */}
+                 <div className="grid grid-cols-4 items-center gap-4">
+                     <Label htmlFor="amount" className="text-right">Amount</Label>
+                      <Input
+                          id="amount"
+                          type="number"
+                          value={transactionAmount}
+                          onChange={(e) => setTransactionAmount(e.target.value)}
+                          className="col-span-2" // Adjusted span
+                          placeholder="0.00"
+                          step="0.01"
+                          min="0.01"
+                          disabled={isSavingTransaction}
+                      />
+                      <Select
+                          value={transactionType}
+                          onValueChange={(value) => setTransactionType(value as "debit" | "credit")}
+                          disabled={isSavingTransaction}
+                      >
+                           {/* Adjusted width via w-full within the col-span-1 implicit container */}
+                          <SelectTrigger className="w-full">
+                              <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                              <SelectItem value="debit">Debit</SelectItem>
+                              <SelectItem value="credit">Credit</SelectItem>
+                          </SelectContent>
+                       </Select>
+                 </div>
+                  {/* Linked Account (Code) */}
+                  <div className="grid grid-cols-4 items-center gap-4">
+                      <Label htmlFor="linkedAccount" className="text-right">Linked Acct.</Label>
+                      <Select
+                          value={linkedAccountId}
+                          onValueChange={setLinkedAccountId}
+                          disabled={isSavingTransaction}
+                      >
+                          <SelectTrigger className="col-span-3">
+                              <SelectValue placeholder="Select account..." />
+                          </SelectTrigger>
+                          <SelectContent>
+                              {allAccounts.length > 0 ? (
+                                  allAccounts.map(acc => (
+                                      <SelectItem key={acc.id} value={acc.id}>{acc.name}</SelectItem>
+                                  ))
+                              ) : (
+                                 <SelectItem value="-" disabled>No other accounts available</SelectItem>
+                              )}
+                          </SelectContent>
+                      </Select>
+                  </div>
+             </div>
+            <DialogFooter>
+              <DialogClose asChild>
+                  <Button type="button" variant="outline" disabled={isSavingTransaction}>Cancel</Button>
+              </DialogClose>
+              <Button type="button" onClick={handleAddTransaction} disabled={isSavingTransaction || !linkedAccountId || !transactionAmount || !transactionDesc.trim() || !transactionSlip.trim()}>
+                 {isSavingTransaction ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : "Save Transaction"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+       </Dialog>
+
+
+       {/* Edit Transaction Confirmation Dialog */}
        <AlertDialog open={showEditConfirm} onOpenChange={setShowEditConfirm}>
          <AlertDialogContent>
            <AlertDialogHeader>
              <AlertDialogTitle>Edit Transaction?</AlertDialogTitle>
              <AlertDialogDescription>
-               Do you really want to edit transaction with Slip No. <strong>{editTarget?.slipNumber}</strong>?
-               Changes will also affect the linked account ({editTarget?.code || 'N/A'}) if applicable.
+               Preparing to edit transaction with Slip No. <strong>{editTarget?.slipNumber}</strong>.
+               This involves modifying linked entries and recalculating balances.
                <br/><br/>
-               <span className="font-semibold text-foreground">Note:</span> Edit functionality is not yet fully implemented. Balances will need recalculation.
+               <span className="font-semibold text-foreground">Note:</span> The actual saving of edits is currently disabled in this mock demonstration due to complexity.
              </AlertDialogDescription>
            </AlertDialogHeader>
            <AlertDialogFooter>
              <AlertDialogCancel onClick={() => setEditTarget(null)}>Cancel</AlertDialogCancel>
-              <Button onClick={confirmEditTransaction} disabled>Yes, Edit (WIP)</Button> {/* Keep disabled until implemented */}
+             {/* Change this from Button to AlertDialogAction if preferred */}
+              <Button onClick={confirmEditIntent}>Continue to Edit Form</Button>
            </AlertDialogFooter>
          </AlertDialogContent>
        </AlertDialog>
+
+        {/* Edit Transaction Form Dialog (similar to Add, pre-filled) */}
+        <Dialog open={isEditTransactionDialogOpen} onOpenChange={(open) => { if(!isSavingTransaction) { setIsEditTransactionDialogOpen(open); if (!open) setEditTarget(null); }}}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Edit Transaction (Slip: {editTarget?.slipNumber})</DialogTitle>
+              <DialogDescription>
+                Modify the details for this transaction. Changes impact linked accounts.
+                <br/> <span className="font-bold text-destructive">Saving is disabled in this demo.</span>
+              </DialogDescription>
+            </DialogHeader>
+            <div className="grid gap-4 py-4">
+                {/* Date */}
+                 <div className="grid grid-cols-4 items-center gap-4">
+                     <Label htmlFor="edit-date" className="text-right">Date</Label>
+                      <Popover>
+                         <PopoverTrigger asChild>
+                             <Button
+                                id="edit-date"
+                                variant={"outline"}
+                                className={cn(
+                                     "w-[280px] justify-start text-left font-normal col-span-3",
+                                     !transactionDate && "text-muted-foreground"
+                                )}
+                                disabled={isSavingTransaction}
+                             >
+                                 <CalendarIcon className="mr-2 h-4 w-4" />
+                                 {transactionDate ? format(transactionDate, "PPP") : <span>Pick a date</span>}
+                              </Button>
+                         </PopoverTrigger>
+                         <PopoverContent className="w-auto p-0">
+                             <Calendar
+                                 mode="single"
+                                 selected={transactionDate}
+                                 onSelect={setTransactionDate}
+                                 initialFocus
+                             />
+                         </PopoverContent>
+                      </Popover>
+                 </div>
+                  {/* Description */}
+                 <div className="grid grid-cols-4 items-center gap-4">
+                    <Label htmlFor="edit-description" className="text-right">Description</Label>
+                    <Textarea
+                        id="edit-description"
+                        value={transactionDesc}
+                        onChange={(e) => setTransactionDesc(e.target.value)}
+                        className="col-span-3"
+                        disabled={isSavingTransaction}
+                    />
+                 </div>
+                 {/* Slip Number (Read-only usually) */}
+                 <div className="grid grid-cols-4 items-center gap-4">
+                     <Label htmlFor="edit-slip" className="text-right">Slip No.</Label>
+                     <Input
+                         id="edit-slip"
+                         value={transactionSlip}
+                         className="col-span-3 bg-muted/50"
+                         readOnly // Typically slip number shouldn't be editable easily
+                     />
+                 </div>
+                  {/* Amount & Type */}
+                 <div className="grid grid-cols-4 items-center gap-4">
+                     <Label htmlFor="edit-amount" className="text-right">Amount</Label>
+                      <Input
+                          id="edit-amount"
+                          type="number"
+                          value={transactionAmount}
+                          onChange={(e) => setTransactionAmount(e.target.value)}
+                          className="col-span-2"
+                          step="0.01"
+                          min="0.01"
+                          disabled={isSavingTransaction}
+                      />
+                      <Select
+                          value={transactionType}
+                          onValueChange={(value) => setTransactionType(value as "debit" | "credit")}
+                          disabled={isSavingTransaction}
+                      >
+                           <SelectTrigger className="w-full"> {/* Adjusted width */}
+                              <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                              <SelectItem value="debit">Debit</SelectItem>
+                              <SelectItem value="credit">Credit</SelectItem>
+                          </SelectContent>
+                       </Select>
+                 </div>
+                  {/* Linked Account (Code) */}
+                  <div className="grid grid-cols-4 items-center gap-4">
+                      <Label htmlFor="edit-linkedAccount" className="text-right">Linked Acct.</Label>
+                      <Select
+                          value={linkedAccountId}
+                          onValueChange={setLinkedAccountId}
+                          disabled={isSavingTransaction}
+                      >
+                          <SelectTrigger className="col-span-3">
+                              <SelectValue placeholder="Select account..." />
+                          </SelectTrigger>
+                          <SelectContent>
+                              {allAccounts.map(acc => (
+                                  <SelectItem key={acc.id} value={acc.id}>{acc.name}</SelectItem>
+                              ))}
+                          </SelectContent>
+                      </Select>
+                  </div>
+             </div>
+            <DialogFooter>
+              <DialogClose asChild>
+                  <Button type="button" variant="outline" disabled={isSavingTransaction}>Cancel</Button>
+              </DialogClose>
+              {/* Disable Save Button for Edit */}
+              <Button
+                 type="button"
+                 onClick={handleSaveEditedTransaction}
+                 disabled={true} // Keep disabled
+                 title="Saving edits is disabled in this demonstration"
+               >
+                 {isSavingTransaction ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : "Save Changes (Disabled)"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
        {/* First Delete Confirmation Dialog */}
         <AlertDialog open={showFirstDeleteConfirm} onOpenChange={setShowFirstDeleteConfirm}>
@@ -523,9 +907,7 @@ export default function AccountDetailPage() {
               <AlertDialogTitle className="flex items-center"><AlertCircle className="text-destructive mr-2 h-5 w-5" />Confirm Deletion</AlertDialogTitle>
              <AlertDialogDescription>
                Do you really want to delete transaction with Slip No. <strong>{deleteTarget?.slipNumber}</strong>?
-               This will also remove the corresponding entry in the linked account ({deleteTarget?.code || 'N/A'}) if applicable. Account balances will be recalculated.
-               <br/><br/>
-                <span className="font-semibold text-destructive">Warning:</span> This operation requires careful handling of linked entries and is currently simulated.
+               This will also remove the corresponding entry in the linked account ({deleteTarget?.code || 'N/A'}). Account balances will be recalculated. This action cannot be undone.
              </AlertDialogDescription>
            </AlertDialogHeader>
            <AlertDialogFooter>
@@ -541,14 +923,12 @@ export default function AccountDetailPage() {
            <AlertDialogHeader>
              <AlertDialogTitle className="flex items-center"><AlertCircle className="text-destructive mr-2 h-5 w-5" />Are you absolutely sure?</AlertDialogTitle>
              <AlertDialogDescription>
-                This action cannot be undone. Permanently deleting transaction <strong>{deleteTarget?.slipNumber}</strong> and its linked entry (if any). Balances will be updated.
-                <br/><br/>
-                 <span className="font-semibold text-destructive">Note:</span> This is a simulation. Actual database deletion needs implementation.
+                Permanently deleting transaction <strong>{deleteTarget?.slipNumber}</strong> and its linked entry from account <strong>{deleteTarget?.code || 'N/A'}</strong>. Balances will be updated. This action cannot be reversed.
              </AlertDialogDescription>
            </AlertDialogHeader>
            <AlertDialogFooter>
              <AlertDialogCancel onClick={() => setDeleteTarget(null)}>Cancel</AlertDialogCancel>
-              <Button onClick={confirmSecondDelete} variant="destructive">Yes, Delete (Simulated)</Button> {/* Indicate simulation */}
+              <Button onClick={confirmSecondDelete} variant="destructive">Yes, Delete Transaction</Button>
            </AlertDialogFooter>
          </AlertDialogContent>
        </AlertDialog>
