@@ -1,3 +1,4 @@
+
 // src/app/dashboard/page.tsx
 "use client";
 
@@ -48,6 +49,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import ThemeToggle from "@/components/theme-toggle";
 import type { Account } from "@/types";
 import { mockDb, getNextAccountId, updateAccountBalance } from "@/lib/mock-data"; // Import mock data and helpers
+import { cn } from "@/lib/utils"; // Import cn for conditional classes
 
 export default function DashboardPage() {
   const { user, loading, signOut } = useAuth();
@@ -123,7 +125,8 @@ export default function DashboardPage() {
     }, 500); // Simulate save delay
   };
 
-  const openEditAccountDialog = (account: Account) => {
+  const openEditAccountDialog = (account: Account, event: React.MouseEvent) => {
+    event.stopPropagation(); // Prevent row click when clicking edit action
     setAccountToEdit(account);
     setEditAccountName(account.name); // Pre-fill current name
     setIsEditAccountDialogOpen(true);
@@ -146,12 +149,14 @@ export default function DashboardPage() {
       const accountIndex = mockDb[userId].accounts.findIndex(acc => acc.id === accountToEdit.id);
       if (accountIndex !== -1) {
          const updatedName = editAccountName.trim();
+         const oldName = mockDb[userId].accounts[accountIndex].name; // Store old name before update
+
          // Update account name
          mockDb[userId].accounts[accountIndex].name = updatedName;
 
          // Update the 'code' (linked account name) in all transactions referencing this account
          mockDb[userId].transactions = mockDb[userId].transactions.map(t => {
-           if (t.code === accountToEdit.name) {
+           if (t.code === oldName) { // Use old name to find references
              return { ...t, code: updatedName };
            }
            return t;
@@ -161,7 +166,7 @@ export default function DashboardPage() {
 
          toast({
            title: "Account Updated",
-           description: `Account "${accountToEdit.name}" has been renamed to "${updatedName}". References updated.`,
+           description: `Account "${oldName}" has been renamed to "${updatedName}". References updated.`,
          });
       } else {
          toast({ title: "Error", description: "Account not found for editing.", variant: "destructive" });
@@ -173,10 +178,11 @@ export default function DashboardPage() {
     }, 500); // Simulate save delay
   };
 
- const promptDeleteAccount = (account: Account) => {
-    setAccountToDelete(account);
-    // The AlertDialogTrigger handles opening the dialog
-  };
+ const promptDeleteAccount = (account: Account, event: React.MouseEvent) => {
+     event.stopPropagation(); // Prevent row click when clicking delete action
+     setAccountToDelete(account);
+     // The AlertDialogTrigger handles opening the dialog
+ };
 
   const handleDeleteAccount = () => {
     if (!accountToDelete) return;
@@ -209,7 +215,7 @@ export default function DashboardPage() {
 
       toast({
         title: "Account Deleted",
-        description: `Account "${accountName}" and its transactions have been removed.`,
+        description: `Account "${accountName}" and its associated transactions have been removed.`,
         variant: "destructive",
       });
       setIsLoadingAccounts(false);
@@ -273,7 +279,8 @@ export default function DashboardPage() {
               <DropdownMenuTrigger asChild>
                 <Button variant="outline" size="icon" className="overflow-hidden rounded-full">
                    <span className="sr-only">User menu</span>
-                   {user.email?.charAt(0).toUpperCase() || 'U'}
+                   {/* Fallback for missing email */}
+                   {user.email ? user.email.charAt(0).toUpperCase() : 'U'}
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
@@ -301,69 +308,76 @@ export default function DashboardPage() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Account Name</TableHead>
-                  <TableHead className="text-right">Current Balance</TableHead>
+                  <TableHead className="text-right">Current Balance ($)</TableHead>
                   <TableHead className="w-[80px]">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {accounts.length > 0 ? (
-                  accounts.map((account) => (
-                    <TableRow key={account.id}>
-                      <TableCell className="font-medium">{account.name}</TableCell>
-                      <TableCell className="text-right font-mono">
-                        {/* Display calculated/stored balance */}
-                        ${(account.balance ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                      </TableCell>
-                      <TableCell>
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button aria-haspopup="true" size="icon" variant="ghost">
-                              <MoreVertical className="h-4 w-4" />
-                              <span className="sr-only">Toggle menu</span>
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            <DropdownMenuItem onClick={() => handleViewAccount(account.id)}>
-                              <Eye className="mr-2 h-4 w-4" /> View
-                            </DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => openEditAccountDialog(account)}>
-                              <Edit className="mr-2 h-4 w-4" /> Edit
-                            </DropdownMenuItem>
-                             <AlertDialog>
-                               <AlertDialogTrigger asChild>
-                                 {/* Use onSelect to prevent menu close and trigger action */}
-                                 <DropdownMenuItem
-                                    onSelect={(e) => { e.preventDefault(); promptDeleteAccount(account); }}
-                                    className="text-destructive focus:bg-destructive/10 focus:text-destructive"
-                                  >
-                                   <Trash2 className="mr-2 h-4 w-4" /> Delete
-                                 </DropdownMenuItem>
-                               </AlertDialogTrigger>
-                               {/* Delete Confirmation Dialog Content (Remains the same) */}
-                               <AlertDialogContent>
-                                 <AlertDialogHeader>
-                                   <AlertDialogTitle className="flex items-center"><AlertCircle className="text-destructive mr-2 h-5 w-5" />Are you absolutely sure?</AlertDialogTitle>
-                                   <AlertDialogDescription>
-                                     This action cannot be undone. This will permanently delete the account
-                                     <strong> "{accountToDelete?.name}"</strong> and all its associated transactions.
-                                   </AlertDialogDescription>
-                                 </AlertDialogHeader>
-                                 <AlertDialogFooter>
-                                   <AlertDialogCancel onClick={() => setAccountToDelete(null)}>Cancel</AlertDialogCancel>
-                                   <AlertDialogAction
-                                      variant="destructive"
-                                      onClick={handleDeleteAccount} // Call the actual delete handler
+                  accounts.map((account) => {
+                    const balance = account.balance ?? 0;
+                    const balanceType = balance >= 0 ? 'CR' : 'DR'; // Assuming positive is Credit
+                    const displayBalance = Math.abs(balance);
+                    return (
+                      <TableRow
+                        key={account.id}
+                        onClick={() => handleViewAccount(account.id)} // Navigate on row click
+                        className="cursor-pointer hover:bg-muted/80"
+                        aria-label={`View account ${account.name}`}
+                       >
+                        <TableCell className="font-medium">{account.name}</TableCell>
+                        <TableCell className={cn("text-right font-mono", balanceType === 'DR' ? 'text-destructive' : '')}>
+                            {/* Display calculated/stored balance */}
+                            {`${displayBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${balanceType}`}
+                        </TableCell>
+                        <TableCell onClick={(e) => e.stopPropagation()} className="cursor-default"> {/* Prevent row click on actions cell */}
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button aria-haspopup="true" size="icon" variant="ghost">
+                                <MoreVertical className="h-4 w-4" />
+                                <span className="sr-only">Toggle menu for {account.name}</span>
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuItem onClick={(e) => openEditAccountDialog(account, e)}>
+                                <Edit className="mr-2 h-4 w-4" /> Edit Name
+                              </DropdownMenuItem>
+                               <AlertDialog>
+                                 <AlertDialogTrigger asChild>
+                                   <DropdownMenuItem
+                                      onSelect={(e) => { e.preventDefault(); promptDeleteAccount(account, e); }}
+                                      className="text-destructive focus:bg-destructive/10 focus:text-destructive"
                                     >
-                                     Yes, delete account
-                                    </AlertDialogAction>
-                                 </AlertDialogFooter>
-                               </AlertDialogContent>
-                             </AlertDialog>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      </TableCell>
-                    </TableRow>
-                  ))
+                                     <Trash2 className="mr-2 h-4 w-4" /> Delete
+                                   </DropdownMenuItem>
+                                 </AlertDialogTrigger>
+                                 {/* Delete Confirmation Dialog Content */}
+                                 <AlertDialogContent>
+                                   <AlertDialogHeader>
+                                     <AlertDialogTitle className="flex items-center"><AlertCircle className="text-destructive mr-2 h-5 w-5" />Are you absolutely sure?</AlertDialogTitle>
+                                     <AlertDialogDescription>
+                                       This action cannot be undone. This will permanently delete the account
+                                       <strong> "{accountToDelete?.name}"</strong> and all its associated transactions, including linked entries in other accounts.
+                                     </AlertDialogDescription>
+                                   </AlertDialogHeader>
+                                   <AlertDialogFooter>
+                                     <AlertDialogCancel onClick={() => setAccountToDelete(null)}>Cancel</AlertDialogCancel>
+                                     <AlertDialogAction
+                                        variant="destructive"
+                                        onClick={handleDeleteAccount} // Call the actual delete handler
+                                        disabled={isLoadingAccounts} // Disable while deleting
+                                      >
+                                       {isLoadingAccounts ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : "Yes, delete account"}
+                                      </AlertDialogAction>
+                                   </AlertDialogFooter>
+                                 </AlertDialogContent>
+                               </AlertDialog>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })
                 ) : (
                   <TableRow>
                     <TableCell colSpan={3} className="text-center h-24">
@@ -376,7 +390,7 @@ export default function DashboardPage() {
           </CardContent>
            <CardFooter>
             <div className="text-xs text-muted-foreground">
-              Showing <strong>{accounts.length}</strong> accounts.
+              Showing <strong>{accounts.length}</strong> account(s). Click row to view details.
             </div>
           </CardFooter>
         </Card>
@@ -421,9 +435,9 @@ export default function DashboardPage() {
         <Dialog open={isEditAccountDialogOpen} onOpenChange={(open) => { if(!isSavingAccount) { setIsEditAccountDialogOpen(open); if(!open) setAccountToEdit(null); } }}>
           <DialogContent className="sm:max-w-[425px]">
             <DialogHeader>
-              <DialogTitle>Edit Account</DialogTitle>
+              <DialogTitle>Edit Account Name</DialogTitle>
               <DialogDescription>
-                Update the name for the account: <strong>{accountToEdit?.name}</strong>.
+                Update the name for the account: <strong>{accountToEdit?.name}</strong>. Linked transaction references will be updated.
               </DialogDescription>
             </DialogHeader>
             <div className="grid gap-4 py-4">
