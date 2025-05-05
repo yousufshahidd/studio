@@ -49,7 +49,7 @@ import {
    SelectValue,
  } from "@/components/ui/select";
  import { Input } from "@/components/ui/input";
- import { Label } from "@/components/ui/label";
+import { Label } from "@/components/ui/label";
  import { Textarea } from "@/components/ui/textarea";
  import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
  import { Calendar } from "@/components/ui/calendar";
@@ -301,17 +301,6 @@ export default function AccountDetailPage() {
 
 
   const handleEditTransaction = (transaction: Transaction) => {
-    // TODO: Implement Edit functionality fully.
-    // This is complex with mock data linking.
-    // 1. Set editTarget (simple transaction)
-    // 2. Open a *confirmation* dialog (showEditConfirm) - existing
-    // 3. If confirmed, open the *actual edit form* dialog (isEditTransactionDialogOpen)
-    // 4. Pre-fill the edit form with data from editTarget
-    // 5. On save:
-    //    - Find *both* transactions (current and linked) by slipNumber in mockDb.
-    //    - Update details in both. Be careful if amount/type/linked account changes.
-    //    - Recalculate balances for *both* affected accounts.
-    //    - Reload data.
     setEditTarget(transaction);
     setShowEditConfirm(true); // Show the initial confirmation dialog
   };
@@ -326,29 +315,125 @@ export default function AccountDetailPage() {
          const amountValue = editTarget.debit ?? editTarget.credit ?? 0;
          setTransactionAmount(amountValue);
          setTransactionType(editTarget.debit ? "debit" : "credit");
-         // Find the linked account ID based on the 'code' (name)
-         const linkedAcc = allAccounts.find(acc => acc.name === editTarget?.code);
-         setLinkedAccountId(linkedAcc?.id || "");
+
+          // Find the linked account ID based on the 'code' (name). Handle potential missing linked account.
+          const linkedAcc = allAccounts.find(acc => acc.name === editTarget?.code);
+          setLinkedAccountId(linkedAcc?.id || "");
+
          // --- Open the Actual Edit Dialog ---
          setIsEditTransactionDialogOpen(true);
      }
   };
 
-  const handleSaveEditedTransaction = () => {
-        // TODO: Implement the actual saving logic for edited transactions as described in handleEditTransaction comments.
-        // This part is complex due to mock data manipulation.
-        setIsSavingTransaction(true);
-        setTimeout(() => {
-            toast({
-               title: "Edit Not Implemented",
-               description: "Saving edited transactions is not fully functional in this mock setup.",
-               variant: "default", // Use default, not destructive
-             });
-            setIsSavingTransaction(false);
-            setIsEditTransactionDialogOpen(false); // Close edit form
-            setEditTarget(null); // Reset edit target
-         }, 500);
+   const handleSaveEditedTransaction = () => {
+      if (!editTarget) {
+            toast({ title: "Error", description: "No transaction selected for editing.", variant: "destructive" });
+            return;
+      }
+
+        // Validation
+        if (!transactionDate || !transactionDesc.trim() || !transactionSlip.trim() || !transactionAmount || !linkedAccountId) {
+           toast({ title: "Error", description: "Please fill all transaction fields.", variant: "destructive" });
+           return;
+        }
+        const amount = parseFloat(transactionAmount.toString());
+        if (isNaN(amount) || amount <= 0) {
+           toast({ title: "Error", description: "Please enter a valid positive amount.", variant: "destructive" });
+           return;
+        }
+        const slip = transactionSlip.trim();
+        // Allow the same slip number if it's the same transaction, otherwise, ensure uniqueness
+        if (slip !== editTarget.slipNumber && slipNumberExists(slip, userId)) {
+           toast({ title: "Error", description: `Slip number "${slip}" already exists. Please use a unique one.`, variant: "destructive" });
+           return;
+        }
+
+      setIsSavingTransaction(true);
+      setTimeout(() => {
+          const currentAccId = accountId!;
+          const linkedAccId = linkedAccountId;
+
+          // Retrieve current account and linked account objects.
+          const currentAcc = mockDb[userId].accounts.find(a => a.id === currentAccId);
+          const linkedAcc = mockDb[userId].accounts.find(a => a.id === linkedAccId);
+
+          if (!linkedAcc || !currentAcc) {
+              toast({ title: "Error", description: "Account details are missing.", variant: "destructive" });
+              setIsSavingTransaction(false);
+              return;
+          }
+
+          const dateISO = transactionDate.toISOString();
+          const desc = transactionDesc.trim();
+          const currentAccName = currentAcc.name;
+          const linkedAccName = linkedAcc.name;
+          const slipToUpdate = editTarget.slipNumber; // Using the original slip to find transactions
+
+          // Find both transactions (current and linked) by the original slip number.
+          const transactionIndex1 = mockDb[userId].transactions.findIndex(t => t.slipNumber === slipToUpdate && t.accountId === currentAccId);
+          const transactionIndex2 = mockDb[userId].transactions.findIndex(t => t.slipNumber === slipToUpdate && t.accountId === linkedAccId);
+
+          if (transactionIndex1 === -1 ) {
+              toast({ title: "Error", description: "Could not find original transaction in current account.", variant: "destructive" });
+              setIsSavingTransaction(false);
+              return;
+          }
+
+          if( transactionIndex2 === -1) {
+               toast({ title: "Error", description: "Could not find linked transaction.", variant: "destructive" });
+               setIsSavingTransaction(false);
+               return;
+          }
+
+          // Transaction 1 (Current Account) - Update with new values
+          const updatedT1: Transaction = {
+              ...mockDb[userId].transactions[transactionIndex1], // Keep existing properties
+              date: dateISO,
+              description: desc,
+              slipNumber: slip,
+              code: linkedAccName, // Link to the other account
+              [transactionType]: amount, // Set debit or credit based on selection
+              debit: transactionType === 'debit' ? amount : undefined,
+              credit: transactionType === 'credit' ? amount : undefined,
+          };
+
+          // Transaction 2 (Linked Account) - Update with new values and opposite entry
+          const oppositeType = transactionType === 'debit' ? 'credit' : 'debit';
+
+          const updatedT2: Transaction = {
+              ...mockDb[userId].transactions[transactionIndex2], // Keep existing properties
+              date: dateISO,
+              description: desc,
+              slipNumber: slip,
+              code: currentAccName, // Link back to the current account
+              [oppositeType]: amount, // Opposite entry type
+              debit: oppositeType === 'debit' ? amount : undefined,
+              credit: oppositeType === 'credit' ? amount : undefined,
+          };
+
+          // Update both transactions in mock DB
+          mockDb[userId].transactions[transactionIndex1] = updatedT1;
+          mockDb[userId].transactions[transactionIndex2] = updatedT2;
+
+          // Recalculate balances for BOTH accounts
+          updateAccountBalance(currentAccId, userId);
+          updateAccountBalance(linkedAccId, userId);
+
+          // Refresh data for the current page
+          loadAccountData();
+
+          toast({
+              title: "Transaction Updated",
+              description: `Transaction ${slip} updated in ${currentAccName} and ${linkedAccName}.`,
+          });
+
+          setIsSavingTransaction(false);
+          setIsEditTransactionDialogOpen(false);
+          setEditTarget(null);
+
+      }, 500);
    };
+
 
 
   const handleDeleteTransaction = (transaction: TransactionWithBalance) => {
@@ -598,7 +683,7 @@ export default function AccountDetailPage() {
                            </DropdownMenuTrigger>
                            <DropdownMenuContent align="end">
                              <DropdownMenuItem onClick={(e) => {e.stopPropagation(); handleEditTransaction(t); }}>
-                               <Edit className="mr-2 h-4 w-4" /> Edit (WIP)
+                               <Edit className="mr-2 h-4 w-4" /> Edit
                              </DropdownMenuItem>
                              <DropdownMenuItem
                                 onSelect={(e) => { e.preventDefault(); e.stopPropagation(); handleDeleteTransaction(t); }}
@@ -765,14 +850,12 @@ export default function AccountDetailPage() {
              <AlertDialogDescription>
                Preparing to edit transaction with Slip No. <strong>{editTarget?.slipNumber}</strong>.
                This involves modifying linked entries and recalculating balances.
-               <br/><br/>
-               <span className="font-semibold text-foreground">Note:</span> The actual saving of edits is currently disabled in this mock demonstration due to complexity.
              </AlertDialogDescription>
            </AlertDialogHeader>
            <AlertDialogFooter>
              <AlertDialogCancel onClick={() => setEditTarget(null)}>Cancel</AlertDialogCancel>
              {/* Change this from Button to AlertDialogAction if preferred */}
-              <Button onClick={confirmEditIntent}>Continue to Edit Form</Button>
+              <AlertDialogAction onClick={confirmEditIntent}>Continue to Edit Form</AlertDialogAction>
            </AlertDialogFooter>
          </AlertDialogContent>
        </AlertDialog>
@@ -784,7 +867,6 @@ export default function AccountDetailPage() {
               <DialogTitle>Edit Transaction (Slip: {editTarget?.slipNumber})</DialogTitle>
               <DialogDescription>
                 Modify the details for this transaction. Changes impact linked accounts.
-                <br/> <span className="font-bold text-destructive">Saving is disabled in this demo.</span>
               </DialogDescription>
             </DialogHeader>
             <div className="grid gap-4 py-4">
@@ -813,7 +895,7 @@ export default function AccountDetailPage() {
                                  onSelect={setTransactionDate}
                                  initialFocus
                              />
-                         </PopoverContent>
+                         PopoverContent>
                       </Popover>
                  </div>
                   {/* Description */}
@@ -833,8 +915,9 @@ export default function AccountDetailPage() {
                      <Input
                          id="edit-slip"
                          value={transactionSlip}
-                         className="col-span-3 bg-muted/50"
-                         readOnly // Typically slip number shouldn't be editable easily
+                         onChange={(e) => setTransactionSlip(e.target.value)} // Make editable
+                         className="col-span-3"
+                         //readOnly // Typically slip number shouldn't be editable easily
                      />
                  </div>
                   {/* Amount & Type */}
@@ -891,10 +974,9 @@ export default function AccountDetailPage() {
               <Button
                  type="button"
                  onClick={handleSaveEditedTransaction}
-                 disabled={true} // Keep disabled
-                 title="Saving edits is disabled in this demonstration"
+                 disabled={isSavingTransaction}
                >
-                 {isSavingTransaction ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : "Save Changes (Disabled)"}
+                 {isSavingTransaction ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : "Save Changes"}
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -929,9 +1011,10 @@ export default function AccountDetailPage() {
            <AlertDialogFooter>
              <AlertDialogCancel onClick={() => setDeleteTarget(null)}>Cancel</AlertDialogCancel>
               <Button onClick={confirmSecondDelete} variant="destructive">Yes, Delete Transaction</Button>
-           </AlertDialogFooter>
-         </AlertDialogContent>
+           AlertDialogFooter>
+         AlertDialogContent>
        </AlertDialog>
     </div>
   );
 }
+
