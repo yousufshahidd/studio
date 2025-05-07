@@ -1,5 +1,5 @@
 // src/lib/mock-data.ts
-import type { Account, Transaction } from "@/types";
+import type { Account, Transaction, TransactionWithBalance } from "@/types";
 
 // Mock data structure: An object where keys are user IDs (or a default ID)
 // containing accounts and transactions for that user.
@@ -50,20 +50,20 @@ export const getNextTransactionNumber = (accountId: string, userId: string = "us
     if (accountTransactions.length === 0) {
         return 1;
     }
-    const maxNumber = Math.max(...accountTransactions.map(t => t.number));
+    const maxNumber = Math.max(...accountTransactions.map(t => t.number), 0); // Ensure Math.max has at least one number
     return maxNumber + 1;
 };
 
 // Helper to get next account ID
-let nextAccountId = 5; // Start after existing mock IDs
+let nextAccountIdCounter = Math.max(...Object.values(mockDb).flatMap(u => u.accounts.map(a => parseInt(a.id, 10))), 0) + 1;
 export const getNextAccountId = (): string => {
-    return (nextAccountId++).toString();
+    return (nextAccountIdCounter++).toString();
 }
 
 // Helper to get next transaction ID
-let nextTransactionIdNum = 9; // Start after existing mock IDs
+let nextTransactionIdNumCounter = Math.max(...Object.values(mockDb).flatMap(u => u.transactions.map(t => parseInt(t.id.replace('t',''), 10))), 0) + 1;
 export const getNextTransactionId = (): string => {
-    return `t${nextTransactionIdNum++}`;
+    return `t${nextTransactionIdNumCounter++}`;
 }
 
 // Helper function to calculate running balance for a specific account
@@ -73,7 +73,12 @@ export const calculateRunningBalance = (accountId: string, userId: string = "use
 
   let currentBalance = 0;
   const transactionsWithBalance = accountTransactions
-    .sort((a, b) => a.number - b.number) // Ensure transactions are sorted by number
+    .sort((a, b) => {
+        // First sort by date, then by number for transactions on the same date
+        const dateComparison = new Date(a.date).getTime() - new Date(b.date).getTime();
+        if (dateComparison !== 0) return dateComparison;
+        return a.number - b.number;
+    })
     .map(t => {
       currentBalance = currentBalance + (t.credit || 0) - (t.debit || 0);
       return { ...t, balance: currentBalance };
@@ -88,15 +93,34 @@ export const calculateRunningBalance = (accountId: string, userId: string = "use
 
 // Helper to update account balance in mock DB (call after transaction changes)
 export const updateAccountBalance = (accountId: string, userId: string = "user1") => {
-     const { finalBalance } = calculateRunningBalance(accountId, userId);
-     const accountIndex = mockDb[userId].accounts.findIndex(acc => acc.id === accountId);
-     if (accountIndex !== -1) {
+     const accountIndex = mockDb[userId]?.accounts.findIndex(acc => acc.id === accountId);
+     if (accountIndex !== -1 && mockDb[userId]) {
+         const { finalBalance } = calculateRunningBalance(accountId, userId);
          mockDb[userId].accounts[accountIndex].balance = finalBalance;
      }
 };
 
-// Helper to check if slip number exists
-export const slipNumberExists = (slipNumber: string, userId: string = "user1"): boolean => {
-    const userTransactions = mockDb[userId]?.transactions || [];
-    return userTransactions.some(t => t.slipNumber.toLowerCase() === slipNumber.toLowerCase());
+// Helper to check if slip number exists and return details
+export interface SlipExistenceDetails {
+    exists: boolean;
+    conflictingTransaction?: Transaction; // The transaction that has the duplicate slip
+    conflictingAccountName?: string; // Name of the account where the duplicate slip exists
+}
+
+export const slipNumberExists = (slipNumber: string, userId: string = "user1"): SlipExistenceDetails => {
+    const userData = mockDb[userId];
+    if (!userData) return { exists: false };
+
+    const userTransactions = userData.transactions || [];
+    const conflictingTransaction = userTransactions.find(t => t.slipNumber.toLowerCase() === slipNumber.toLowerCase());
+
+    if (conflictingTransaction) {
+        const conflictingAccount = userData.accounts.find(acc => acc.id === conflictingTransaction.accountId);
+        return {
+            exists: true,
+            conflictingTransaction,
+            conflictingAccountName: conflictingAccount?.name || "Unknown Account"
+        };
+    }
+    return { exists: false };
 }

@@ -57,8 +57,9 @@ import { useToast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import { generatePdf, downloadPdf } from "@/services/pdf-generator";
+import { generatePdf, downloadPdf } from "@/services/pdf-generator"; // generatePdf is now for HTML DocumentContent
 import type { Account, Transaction, TransactionWithBalance } from "@/types";
+import type { DocumentContent } from "@/services/pdf-generator"; // Import DocumentContent
 import {
     mockDb,
     calculateRunningBalance,
@@ -70,18 +71,17 @@ import {
 import { format } from "date-fns";
 
 
-// Function to generate PDF (uses pdf-generator service)
-async function generateAccountPdf(accountName: string, transactions: TransactionWithBalance[]) {
-  console.log(`Generating PDF for account: ${accountName}`);
-  console.log("Including Transactions:", transactions.map(t => t.slipNumber));
+// Function to prepare HTML for download (previously generateAccountPdf)
+async function prepareAccountHtmlForDownload(accountName: string, transactions: TransactionWithBalance[]): Promise<DocumentContent> {
+  console.log(`Preparing HTML statement for account: ${accountName}`);
+  console.log("Including Transactions (Slips):", transactions.map(t => t.slipNumber));
 
-  // Determine final balance and DR/CR status
+  // Determine final balance and DR/CR status from the last transaction in the provided list
   const finalBalanceEntry = transactions.length > 0 ? transactions[transactions.length - 1] : null;
-  const finalBalance = finalBalanceEntry?.balance ?? 0;
-  const finalBalanceStatus = finalBalance >= 0 ? "CR" : "DR"; // Assuming positive is Credit, negative is Debit for typical ledgers
-  const absFinalBalance = Math.abs(finalBalance);
+  const finalBalanceValue = finalBalanceEntry?.balance ?? 0;
+  const finalBalanceStatus = finalBalanceValue >= 0 ? "CR" : "DR";
+  const absFinalBalance = Math.abs(finalBalanceValue);
 
-  // Generate HTML content for the PDF, excluding the 'Code' column and adding DR/CR
   const htmlContent = `
     <html>
     <head>
@@ -141,11 +141,12 @@ async function generateAccountPdf(accountName: string, transactions: Transaction
   `;
 
   try {
-    const pdfDoc = await generatePdf(htmlContent); // Call the actual service
-    return pdfDoc;
+    // generatePdf now returns DocumentContent which includes mimeType and fileExtension
+    const docDetails = await generatePdf(htmlContent); // This service call name remains for consistency with Genkit guidelines if it were a real service.
+    return docDetails;
   } catch (error) {
-    console.error("Error generating PDF via service:", error);
-    throw new Error("Failed to generate PDF document.");
+    console.error("Error preparing HTML document via service:", error);
+    throw new Error("Failed to prepare HTML document.");
   }
 }
 
@@ -157,23 +158,21 @@ export default function AccountDetailPage() {
   const { toast } = useToast();
   const [account, setAccount] = React.useState<Account | null>(null);
   const [transactionsWithBalance, setTransactionsWithBalance] = React.useState<TransactionWithBalance[]>([]);
-  const [allAccounts, setAllAccounts] = React.useState<Account[]>([]); // For dropdowns
+  const [allAccounts, setAllAccounts] = React.useState<Account[]>([]);
   const [isLoading, setIsLoading] = React.useState(true);
-  const [isPdfGenerating, setIsPdfGenerating] = React.useState(false);
+  const [isStatementGenerating, setIsStatementGenerating] = React.useState(false); // Renamed from isPdfGenerating
   const [deleteTarget, setDeleteTarget] = React.useState<TransactionWithBalance | null>(null);
   const [showFirstDeleteConfirm, setShowFirstDeleteConfirm] = React.useState(false);
   const [showSecondDeleteConfirm, setShowSecondDeleteConfirm] = React.useState(false);
-  const [editTarget, setEditTarget] = React.useState<Transaction | null>(null); // Keep simple Transaction for edit form
-  const [showEditConfirm, setShowEditConfirm] = React.useState(false); // Dialog before showing full edit form
+  const [editTarget, setEditTarget] = React.useState<Transaction | null>(null);
+  const [showEditConfirm, setShowEditConfirm] = React.useState(false);
   const [isAddTransactionDialogOpen, setIsAddTransactionDialogOpen] = React.useState(false);
-  const [isEditTransactionDialogOpen, setIsEditTransactionDialogOpen] = React.useState(false); // The actual edit form dialog
+  const [isEditTransactionDialogOpen, setIsEditTransactionDialogOpen] = React.useState(false);
   const [isSavingTransaction, setIsSavingTransaction] = React.useState(false);
-  // State for Partial PDF Dialog
-  const [isPartialPdfDialogOpen, setIsPartialPdfDialogOpen] = React.useState(false);
-  const [partialPdfTransactionNumber, setPartialPdfTransactionNumber] = React.useState<string>("");
+  const [isPartialStatementDialogOpen, setIsPartialStatementDialogOpen] = React.useState(false); // Renamed
+  const [partialStatementTransactionNumber, setPartialStatementTransactionNumber] = React.useState<string>(""); // Renamed
 
 
-  // Add/Edit Transaction Form State
    const [transactionDate, setTransactionDate] = React.useState<Date | undefined>(new Date());
    const [transactionDesc, setTransactionDesc] = React.useState("");
    const [transactionSlip, setTransactionSlip] = React.useState("");
@@ -182,9 +181,8 @@ export default function AccountDetailPage() {
    const [linkedAccountId, setLinkedAccountId] = React.useState<string>("");
 
 
-  const userId = user?.uid || "user1"; // Use actual UID if available, else default mock user
+  const userId = user?.uid || "user1";
 
-  // --- Data Fetching and Calculation ---
   const loadAccountData = React.useCallback(() => {
     if (!accountId || !mockDb[userId]) {
        toast({ title: "Error", description: "Account data not available.", variant: "destructive" });
@@ -193,43 +191,38 @@ export default function AccountDetailPage() {
     }
      setIsLoading(true);
 
-     // Simulate fetching
      setTimeout(() => {
-       const currentAccount = mockDb[userId].accounts.find(acc => acc.id === accountId);
-       if (currentAccount) {
-         setAccount(currentAccount);
-         setAllAccounts(mockDb[userId].accounts.filter(acc => acc.id !== accountId)); // Other accounts for linking
+       const currentAccountData = mockDb[userId].accounts.find(acc => acc.id === accountId);
+       if (currentAccountData) {
+         setAccount(currentAccountData);
+         setAllAccounts(mockDb[userId].accounts.filter(acc => acc.id !== accountId));
 
-         // Calculate balances for the current account
          const { transactions, finalBalance } = calculateRunningBalance(accountId, userId);
          setTransactionsWithBalance(transactions);
-         // Update the main account object's balance using the calculated final balance
+         // Update the account's balance directly from the calculation for consistency
          setAccount(prev => prev ? { ...prev, balance: finalBalance } : null);
 
        } else {
          toast({ title: "Error", description: "Account not found.", variant: "destructive" });
-         router.push("/dashboard"); // Redirect if account doesn't exist
+         router.push("/dashboard");
        }
        setIsLoading(false);
-     }, 300); // Shorter delay for mock data
+     }, 300);
   }, [accountId, userId, router, toast]);
 
   React.useEffect(() => {
     if (!authLoading && !user) {
-      router.push("/"); // Redirect if not logged in
+      router.push("/");
     } else if (user && accountId) {
         loadAccountData();
     }
-     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user, authLoading, accountId, router]); // loadAccountData is stable
+  }, [user, authLoading, accountId, router, loadAccountData]);
 
-  // --- Transaction Actions ---
 
   const openAddTransactionDialog = () => {
-      // Reset form fields
       setTransactionDate(new Date());
       setTransactionDesc("");
-      setTransactionSlip(""); // TODO: Suggest next slip number?
+      setTransactionSlip("");
       setTransactionAmount("");
       setTransactionType("debit");
       setLinkedAccountId("");
@@ -237,7 +230,6 @@ export default function AccountDetailPage() {
   };
 
  const handleAddTransaction = () => {
-     // Validation
      if (!transactionDate || !transactionDesc.trim() || !transactionSlip.trim() || !transactionAmount || !linkedAccountId) {
        toast({ title: "Validation Error", description: "Please fill all transaction fields.", variant: "destructive" });
        return;
@@ -248,8 +240,14 @@ export default function AccountDetailPage() {
        return;
      }
       const slip = transactionSlip.trim();
-      if (slipNumberExists(slip, userId)) {
-         toast({ title: "Duplicate Slip Error", description: `Slip number "${slip}" already exists. Please use a unique one.`, variant: "destructive" });
+      const slipCheck = slipNumberExists(slip, userId);
+      if (slipCheck.exists) {
+         toast({
+             title: "Duplicate Slip Error",
+             description: `Slip number "${slip}" already exists in transaction (No. ${slipCheck.conflictingTransaction?.number}) of account "${slipCheck.conflictingAccountName}". Please use a unique one.`,
+             variant: "destructive",
+             duration: 7000 // Longer duration for more info
+         });
          return;
      }
       const linkedAccExists = allAccounts.some(acc => acc.id === linkedAccountId);
@@ -259,25 +257,23 @@ export default function AccountDetailPage() {
       }
 
      setIsSavingTransaction(true);
-     // Simulate adding transaction to mock data (Double Entry)
      setTimeout(() => {
          const currentAccId = accountId!;
          const linkedAccId = linkedAccountId;
          const linkedAcc = mockDb[userId].accounts.find(a => a.id === linkedAccId);
-         const currentAcc = mockDb[userId].accounts.find(a => a.id === currentAccId); // Get current account details
+         const currentAcc = mockDb[userId].accounts.find(a => a.id === currentAccId);
 
-         if(!linkedAcc || !currentAcc) { // Ensure both accounts exist
+         if(!linkedAcc || !currentAcc) {
              toast({ title: "Error", description: "Account details could not be retrieved.", variant: "destructive" });
              setIsSavingTransaction(false);
              return;
          }
 
-         const dateISO = transactionDate.toISOString().split('T')[0]; // Store date as YYYY-MM-DD
+         const dateISO = transactionDate.toISOString().split('T')[0];
          const desc = transactionDesc.trim();
          const currentAccName = currentAcc.name;
          const linkedAccName = linkedAcc.name;
 
-         // Transaction 1 (Current Account)
          const t1: Transaction = {
              id: getNextTransactionId(),
              accountId: currentAccId,
@@ -285,36 +281,27 @@ export default function AccountDetailPage() {
              date: dateISO,
              description: desc,
              slipNumber: slip,
-             code: linkedAccName, // Link to the other account's name
-             [transactionType]: amount, // Set debit or credit based on selection
-             // Ensure the opposite type is explicitly undefined or null
+             code: linkedAccName,
+             [transactionType]: amount,
              ...(transactionType === 'debit' ? { credit: undefined } : { debit: undefined }),
          };
 
-         // Transaction 2 (Linked Account - opposite entry)
           const oppositeType = transactionType === 'debit' ? 'credit' : 'debit';
          const t2: Transaction = {
              id: getNextTransactionId(),
              accountId: linkedAccId,
              number: getNextTransactionNumber(linkedAccId, userId),
              date: dateISO,
-             description: desc, // Can customize description slightly if needed, e.g., "From/To [CurrentAccountName]"
+             description: desc,
              slipNumber: slip,
-             code: currentAccName, // Link back to the current account's name
-             // Opposite entry type
+             code: currentAccName,
              [oppositeType]: amount,
-              // Ensure the opposite type is explicitly undefined or null
              ...(oppositeType === 'debit' ? { credit: undefined } : { debit: undefined }),
          };
 
-         // Add both transactions to mock DB
          mockDb[userId].transactions.push(t1, t2);
-
-         // Recalculate balances for BOTH accounts
          updateAccountBalance(currentAccId, userId);
          updateAccountBalance(linkedAccId, userId);
-
-         // Refresh data for the current page
          loadAccountData();
 
          toast({
@@ -323,36 +310,34 @@ export default function AccountDetailPage() {
          });
          setIsSavingTransaction(false);
          setIsAddTransactionDialogOpen(false);
-     }, 500); // Simulate save delay
+     }, 500);
  };
 
 
   const handleEditTransaction = (transaction: Transaction) => {
     const linkedAcc = allAccounts.find(acc => acc.name === transaction?.code);
-    if (!linkedAcc) {
+    // Also allow editing if the code refers to the current account's name (self-referential placeholder or error)
+    const isLinkedToSelf = account?.name === transaction?.code;
+
+    if (!linkedAcc && !isLinkedToSelf) {
         toast({ title: "Error", description: `Cannot edit: Linked account "${transaction?.code}" not found or is inactive.`, variant: "destructive" });
         return;
     }
     setEditTarget(transaction);
-    setShowEditConfirm(true); // Show the initial confirmation dialog
+    setShowEditConfirm(true);
   };
 
   const confirmEditIntent = () => {
-     setShowEditConfirm(false); // Close confirmation dialog
+     setShowEditConfirm(false);
      if (editTarget) {
-         // --- Pre-fill Edit Form State ---
-         setTransactionDate(new Date(editTarget.date)); // Assuming date is stored as string/timestamp
+         setTransactionDate(new Date(editTarget.date));
          setTransactionDesc(editTarget.description);
          setTransactionSlip(editTarget.slipNumber);
          const amountValue = editTarget.debit ?? editTarget.credit ?? 0;
          setTransactionAmount(amountValue);
          setTransactionType(editTarget.debit ? "debit" : "credit");
-
-          // Find the linked account ID based on the 'code' (name). Handle potential missing linked account.
           const linkedAcc = allAccounts.find(acc => acc.name === editTarget?.code);
-          setLinkedAccountId(linkedAcc?.id || ""); // Set linked account ID
-
-         // --- Open the Actual Edit Dialog ---
+          setLinkedAccountId(linkedAcc?.id || "");
          setIsEditTransactionDialogOpen(true);
      }
   };
@@ -363,7 +348,6 @@ export default function AccountDetailPage() {
             return;
       }
 
-        // Validation
         if (!transactionDate || !transactionDesc.trim() || !transactionSlip.trim() || !transactionAmount || !linkedAccountId) {
            toast({ title: "Validation Error", description: "Please fill all transaction fields.", variant: "destructive" });
            return;
@@ -374,10 +358,17 @@ export default function AccountDetailPage() {
            return;
         }
         const slip = transactionSlip.trim();
-        // Allow the same slip number if it's the same transaction, otherwise, ensure uniqueness
-        if (slip !== editTarget.slipNumber && slipNumberExists(slip, userId)) {
-           toast({ title: "Duplicate Slip Error", description: `Slip number "${slip}" already exists. Please use a unique one.`, variant: "destructive" });
-           return;
+        if (slip !== editTarget.slipNumber) {
+            const slipCheck = slipNumberExists(slip, userId);
+            if (slipCheck.exists) {
+                toast({
+                    title: "Duplicate Slip Error",
+                    description: `Slip number "${slip}" already exists in transaction (No. ${slipCheck.conflictingTransaction?.number}) of account "${slipCheck.conflictingAccountName}". Please use a unique one.`,
+                    variant: "destructive",
+                    duration: 7000
+                });
+                return;
+            }
         }
         const linkedAccExists = allAccounts.some(acc => acc.id === linkedAccountId);
         if (!linkedAccExists) {
@@ -388,83 +379,109 @@ export default function AccountDetailPage() {
       setIsSavingTransaction(true);
       setTimeout(() => {
           const currentAccId = accountId!;
-          const newLinkedAccId = linkedAccountId; // The ID selected in the form
+          const newLinkedAccId = linkedAccountId;
 
-          // Retrieve current account and NEW linked account objects.
           const currentAcc = mockDb[userId].accounts.find(a => a.id === currentAccId);
           const newLinkedAcc = mockDb[userId].accounts.find(a => a.id === newLinkedAccId);
 
-           // Find the OLD linked account using the original transaction's code (name)
-           const oldLinkedAcc = mockDb[userId].accounts.find(a => a.id !== currentAccId && a.name === editTarget.code);
+           const oldLinkedAcc = mockDb[userId].accounts.find(a => a.name === editTarget.code); // Find by original code
            const oldLinkedAccId = oldLinkedAcc?.id;
 
 
-          if (!newLinkedAcc || !currentAcc || !oldLinkedAccId) {
-              toast({ title: "Error", description: "Account details are missing or invalid.", variant: "destructive" });
+          if (!newLinkedAcc || !currentAcc || !oldLinkedAccId ) {
+              toast({ title: "Error", description: "Account details are missing or invalid for edit operation.", variant: "destructive" });
               setIsSavingTransaction(false);
               return;
           }
 
-          const dateISO = transactionDate.toISOString().split('T')[0]; // Store date as YYYY-MM-DD
+          const dateISO = transactionDate.toISOString().split('T')[0];
           const desc = transactionDesc.trim();
           const currentAccName = currentAcc.name;
           const newLinkedAccName = newLinkedAcc.name;
-          const originalSlip = editTarget.slipNumber; // Using the original slip to find transactions
+          const originalSlip = editTarget.slipNumber;
 
-          // Find both original transactions (current and old linked) by the original slip number.
           const transactionIndex1 = mockDb[userId].transactions.findIndex(t => t.slipNumber === originalSlip && t.accountId === currentAccId);
-          const transactionIndex2 = mockDb[userId].transactions.findIndex(t => t.slipNumber === originalSlip && t.accountId === oldLinkedAccId); // Use oldLinkedAccId
+          const transactionIndex2 = mockDb[userId].transactions.findIndex(t => t.slipNumber === originalSlip && t.accountId === oldLinkedAccId);
 
           if (transactionIndex1 === -1 ) {
               toast({ title: "Error", description: "Could not find original transaction in current account.", variant: "destructive" });
               setIsSavingTransaction(false);
               return;
           }
-
-          if( transactionIndex2 === -1) {
+           if( transactionIndex2 === -1 && currentAccId !== oldLinkedAccId) { // Only error if it's a different account
                toast({ title: "Error", description: `Could not find the original linked transaction in account "${editTarget.code}". It might have been deleted or modified separately.`, variant: "destructive" });
                setIsSavingTransaction(false);
                return;
           }
 
-          // --- Update Transaction 1 (Current Account) ---
+
           const updatedT1: Transaction = {
-              ...mockDb[userId].transactions[transactionIndex1], // Keep existing ID and number
+              ...mockDb[userId].transactions[transactionIndex1],
               date: dateISO,
               description: desc,
-              slipNumber: slip, // Use new slip number
-              code: newLinkedAccName, // Link to the NEW linked account's name
-              [transactionType]: amount, // Set debit or credit based on selection
+              slipNumber: slip,
+              code: newLinkedAccName,
               debit: transactionType === 'debit' ? amount : undefined,
               credit: transactionType === 'credit' ? amount : undefined,
           };
 
-          // --- Update Transaction 2 (Linked Account) ---
           const oppositeType = transactionType === 'debit' ? 'credit' : 'debit';
-          const updatedT2: Transaction = {
-              ...mockDb[userId].transactions[transactionIndex2], // Keep existing ID and number
-              accountId: newLinkedAccId, // Point to the NEW linked account ID
-              date: dateISO,
-              description: desc,
-              slipNumber: slip, // Use new slip number
-              code: currentAccName, // Link back to the current account's name
-              [oppositeType]: amount, // Opposite entry type
-              debit: oppositeType === 'debit' ? amount : undefined,
-              credit: oppositeType === 'credit' ? amount : undefined,
-          };
-
-          // Update both transactions in mock DB
-          mockDb[userId].transactions[transactionIndex1] = updatedT1;
-          mockDb[userId].transactions[transactionIndex2] = updatedT2;
-
-          // Recalculate balances for CURRENT, OLD linked, and NEW linked accounts
-          updateAccountBalance(currentAccId, userId);
-          updateAccountBalance(oldLinkedAccId, userId); // Recalculate old linked account
-          if (oldLinkedAccId !== newLinkedAccId) {
-             updateAccountBalance(newLinkedAccId, userId); // Recalculate new linked account if different
+          // Only update t2 if it was found (i.e., not a self-linked transaction or similar oddity)
+          if (transactionIndex2 !== -1) {
+            const updatedT2: Transaction = {
+                ...mockDb[userId].transactions[transactionIndex2],
+                accountId: newLinkedAccId,
+                date: dateISO,
+                description: desc,
+                slipNumber: slip,
+                code: currentAccName,
+                debit: oppositeType === 'debit' ? amount : undefined,
+                credit: oppositeType === 'credit' ? amount : undefined,
+            };
+             mockDb[userId].transactions[transactionIndex2] = updatedT2;
+          } else if (currentAccId === oldLinkedAccId && transactionIndex1 !== -1) {
+             // This case handles if the original "linked" transaction was actually a self-reference or error,
+             // and we're correcting it to a proper double entry.
+             // We'd effectively be creating the second leg if it was missing.
+             // For this app's logic, if t2 wasn't found and it wasn't supposed to be the same account, it's an error.
+             // If it *was* the same account, it means original data was faulty - this edit corrects by making 'newLinkedAccId' the target.
+             // For simplicity, the current code errors out above if transactionIndex2 is -1 and accounts are different.
+             // If they are the same, this means the "code" was pointing to itself, which is odd.
+             // The edit process should result in a valid t1 for currentAcc and potentially create/update t2 for newLinkedAcc.
+             // The current structure assumes t2 always exists if oldLinkedAccId is valid.
+             // We'll assume an error if t2 isn't found and oldLinkedAccId was different from currentAccId.
+             // If oldLinkedAccId was same as currentAccId, and t2 not found, means it was a single-leg entry,
+             // which is against the double-entry principle. The edit is attempting to fix this.
+             // The provided code seems to implicitly handle this by updating t1 correctly, and if t2 was missing (index -1),
+             // and it was meant for a *different* account, it errors. If it was meant for the *same* account,
+             // it implies an error in original data or a single-sided entry.
+             // The update to t2 should point to newLinkedAccId.
+            console.warn("Original linked transaction not found, potential data inconsistency or edit fixing a single-sided entry.");
+             // If we wanted to create the second leg if it was missing:
+            const newT2: Transaction = {
+                id: getNextTransactionId(), // A new ID for this leg
+                accountId: newLinkedAccId,
+                number: getNextTransactionNumber(newLinkedAccId, userId), // New number for the linked account
+                date: dateISO,
+                description: desc,
+                slipNumber: slip,
+                code: currentAccName,
+                debit: oppositeType === 'debit' ? amount : undefined,
+                credit: oppositeType === 'credit' ? amount : undefined,
+            };
+            mockDb[userId].transactions.push(newT2); // Add the new second leg
           }
 
-          // Refresh data for the current page
+
+          mockDb[userId].transactions[transactionIndex1] = updatedT1;
+
+
+          updateAccountBalance(currentAccId, userId);
+          updateAccountBalance(oldLinkedAccId, userId);
+          if (oldLinkedAccId !== newLinkedAccId) {
+             updateAccountBalance(newLinkedAccId, userId);
+          }
+
           loadAccountData();
 
           toast({
@@ -474,17 +491,16 @@ export default function AccountDetailPage() {
 
           setIsSavingTransaction(false);
           setIsEditTransactionDialogOpen(false);
-          setEditTarget(null); // Clear edit target
+          setEditTarget(null);
 
-      }, 500); // Simulate save delay
+      }, 500);
    };
 
 
 
   const handleDeleteTransaction = (transaction: TransactionWithBalance) => {
-     // Check if the linked account exists before allowing deletion
      const linkedAccount = mockDb[userId].accounts.find(acc => acc.name === transaction.code);
-     if (!linkedAccount) {
+     if (!linkedAccount && account?.name !== transaction.code) { // Allow deletion if linked to self (error case)
           toast({ title: "Deletion Error", description: `Cannot delete: Linked account "${transaction.code}" not found or is inactive. Resolve linked account issue first.`, variant: "destructive" });
           return;
      }
@@ -494,119 +510,114 @@ export default function AccountDetailPage() {
 
   const confirmFirstDelete = () => {
     setShowFirstDeleteConfirm(false);
-    setShowSecondDeleteConfirm(true); // Show the second confirmation
+    setShowSecondDeleteConfirm(true);
   };
 
    const confirmSecondDelete = () => {
      setShowSecondDeleteConfirm(false);
      if (deleteTarget) {
-        setIsLoading(true); // Show loading while deleting
-       // Simulate deletion from mock data
+        setIsLoading(true);
        setTimeout(() => {
          const slipToDelete = deleteTarget.slipNumber;
          const currentAccountId = deleteTarget.accountId;
          const linkedAccountName = deleteTarget.code;
 
-         // Find the ID of the linked account based on its name (code)
          const linkedAccount = mockDb[userId].accounts.find(acc => acc.name === linkedAccountName);
          const linkedAccountId = linkedAccount?.id;
 
-         if (!linkedAccountId) {
+         if (!linkedAccountId && currentAccountId !== linkedAccount?.id) { // Check if linked account is not the current account
              toast({ title: "Deletion Error", description: `Could not find linked account "${linkedAccountName}" to remove the corresponding entry.`, variant: "destructive" });
-             setIsLoading(false); // Stop loading
-             setDeleteTarget(null); // Reset delete target
+             setIsLoading(false);
+             setDeleteTarget(null);
              return;
          }
 
-         // Filter out both transactions (current and linked) by slip number
          const initialLength = mockDb[userId].transactions.length;
          mockDb[userId].transactions = mockDb[userId].transactions.filter(t => t.slipNumber !== slipToDelete);
          const deletedCount = initialLength - mockDb[userId].transactions.length;
 
-         if (deletedCount < 2) {
-             console.warn(`Attempted to delete slip ${slipToDelete}, but found ${deletedCount} matching transactions instead of 2. Data might be inconsistent.`);
-             // Decide if you want to proceed or show an error
+         if (deletedCount === 0) {
+             console.warn(`Attempted to delete slip ${slipToDelete}, but no matching transactions found. Data might be inconsistent.`);
+             toast({ title: "Deletion Warning", description: `No transactions found for slip ${slipToDelete}.`, variant: "destructive" });
+         } else if (deletedCount === 1) {
+             console.warn(`Attempted to delete slip ${slipToDelete}, but only found 1 matching transaction. This implies a broken double-entry.`);
+             // Still proceed with updating balances
          }
 
-         // Recalculate balances for BOTH accounts
+
          updateAccountBalance(currentAccountId, userId);
-         if (linkedAccountId) {
+         if (linkedAccountId && linkedAccountId !== currentAccountId) { // Only update if it's a different account
            updateAccountBalance(linkedAccountId, userId);
          }
 
-         // Refresh data for the current page
-         loadAccountData(); // This will set isLoading back to false
+         loadAccountData();
 
          toast({
            title: "Transaction Deleted",
-           description: `Transaction ${slipToDelete} and its linked entry removed. Balances updated.`,
-           variant: "default", // Use default variant for successful deletion
+           description: `Transaction ${slipToDelete} and its linked entry (if any) removed. Balances updated.`,
+           variant: "default",
          });
 
-         setDeleteTarget(null); // Reset delete target
-      }, 500); // Simulate deletion delay
+         setDeleteTarget(null);
+      }, 500);
      } else {
-         setDeleteTarget(null); // Reset delete target if it was somehow null
+         setDeleteTarget(null);
      }
    };
 
-  // --- PDF Generation ---
-  const handleGeneratePdf = async (type: 'whole' | 'upto') => {
+  // --- HTML Statement Generation ---
+  const handleGenerateStatement = async (type: 'whole' | 'upto') => {
      if (!account) {
           toast({ title: "Error", description: "Account data not loaded.", variant: "destructive" });
           return;
      }
 
      if (transactionsWithBalance.length === 0 && type === 'whole') {
-         toast({ title: "Info", description: "No transactions in this account to generate a PDF.", variant: "default" });
+         toast({ title: "Info", description: "No transactions in this account to generate a statement.", variant: "default" });
          return;
      }
 
      if (type === 'upto') {
-       // Open the dialog to ask for the transaction number
-       setPartialPdfTransactionNumber(""); // Reset input
-       setIsPartialPdfDialogOpen(true);
-       return; // Stop here, the dialog's action will handle generation
+       setPartialStatementTransactionNumber("");
+       setIsPartialStatementDialogOpen(true);
+       return;
      }
 
-     setIsPdfGenerating(true);
+     setIsStatementGenerating(true);
      let transactionsToInclude: TransactionWithBalance[] = [];
      let toastMessage = "";
-     let filename = `Account_${account.name.replace(/\s+/g, '_')}_${new Date().toISOString().split('T')[0]}.pdf`;
+     let filename = `Account_Statement_${account.name.replace(/\s+/g, '_')}_${new Date().toISOString().split('T')[0]}`;
 
      try {
        if (type === 'whole') {
-         transactionsToInclude = transactionsWithBalance; // Use all currently displayed transactions
-         toastMessage = `Generating PDF for the whole account '${account.name}'...`;
-         filename = `Account_${account.name.replace(/\s+/g, '_')}_Whole_${new Date().toISOString().split('T')[0]}.pdf`;
+         transactionsToInclude = transactionsWithBalance;
+         toastMessage = `Generating HTML statement for the whole account '${account.name}'...`;
+         filename = `Account_Statement_${account.name.replace(/\s+/g, '_')}_Whole_${new Date().toISOString().split('T')[0]}`;
        }
-       // 'upto' case is handled by handleGeneratePartialPdf
+
+        if (transactionsToInclude.length === 0 && type === 'whole') { // Check again specifically for 'whole' after logic
+            throw new Error("No transactions available to include in the statement.");
+        }
 
        toast({ title: "Processing...", description: toastMessage });
 
-       // Ensure there are transactions to include before generating
-        if (transactionsToInclude.length === 0) {
-            throw new Error("No transactions selected or available to include in the PDF.");
-        }
-
-       const pdfDoc = await generateAccountPdf(account.name, transactionsToInclude);
-       downloadPdf(pdfDoc.content, filename); // Trigger download using helper
-       toast({ title: "PDF Ready", description: `PDF '${filename}' generated and download started.` });
+       const docDetails = await prepareAccountHtmlForDownload(account.name, transactionsToInclude);
+       downloadPdf(docDetails.content, filename, docDetails.mimeType);
+       toast({ title: "Statement Ready", description: `HTML Statement '${filename}${docDetails.fileExtension}' generated and download started.` });
 
      } catch (error: any) {
-        console.error("PDF generation/download failed:", error);
-        toast({ title: "PDF Error", description: error.message || "Could not generate or download PDF.", variant: "destructive" });
+        console.error("HTML Statement generation/download failed:", error);
+        toast({ title: "Statement Error", description: error.message || "Could not generate or download statement.", variant: "destructive" });
      } finally {
-        setIsPdfGenerating(false);
+        setIsStatementGenerating(false);
      }
    };
 
-   // --- Handle Partial PDF Generation ---
-   const handleGeneratePartialPdf = async () => {
+   const handleGeneratePartialStatement = async () => {
      if (!account) return;
-     setIsPartialPdfDialogOpen(false); // Close the dialog
+     setIsPartialStatementDialogOpen(false);
 
-     const targetNumberStr = partialPdfTransactionNumber.trim();
+     const targetNumberStr = partialStatementTransactionNumber.trim();
      if (!targetNumberStr) {
          toast({ title: "Input Required", description: "Please enter a transaction number.", variant: "destructive" });
          return;
@@ -617,7 +628,6 @@ export default function AccountDetailPage() {
           return;
      }
 
-     // Find the index of the transaction with the given number
      const targetIndex = transactionsWithBalance.findIndex(t => t.number === targetNumber);
 
      if (targetIndex === -1) {
@@ -625,13 +635,12 @@ export default function AccountDetailPage() {
          return;
      }
 
-     setIsPdfGenerating(true);
+     setIsStatementGenerating(true);
      let transactionsToInclude: TransactionWithBalance[] = [];
      let toastMessage = "";
      let filename = "";
 
      try {
-       // Get all transactions up to and including the one with the target number
        transactionsToInclude = transactionsWithBalance.slice(0, targetIndex + 1);
 
        if (transactionsToInclude.length === 0) {
@@ -639,30 +648,28 @@ export default function AccountDetailPage() {
        }
 
        const targetSlip = transactionsWithBalance[targetIndex].slipNumber;
-       toastMessage = `Generating PDF for '${account.name}' up to transaction number ${targetNumber} (Slip: ${targetSlip})...`;
-       filename = `Account_${account.name.replace(/\s+/g, '_')}_Upto_No${targetNumber}_${new Date().toISOString().split('T')[0]}.pdf`;
+       toastMessage = `Generating HTML statement for '${account.name}' up to transaction number ${targetNumber} (Slip: ${targetSlip})...`;
+       filename = `Account_Statement_${account.name.replace(/\s+/g, '_')}_Upto_No${targetNumber}_${new Date().toISOString().split('T')[0]}`;
 
        toast({ title: "Processing...", description: toastMessage });
 
-       const pdfDoc = await generateAccountPdf(account.name, transactionsToInclude);
-       downloadPdf(pdfDoc.content, filename); // Trigger download
-       toast({ title: "PDF Ready", description: `PDF '${filename}' generated and download started.` });
+       const docDetails = await prepareAccountHtmlForDownload(account.name, transactionsToInclude);
+       downloadPdf(docDetails.content, filename, docDetails.mimeType);
+       toast({ title: "Statement Ready", description: `HTML Statement '${filename}${docDetails.fileExtension}' generated and download started.` });
 
      } catch (error: any) {
-       console.error("Partial PDF generation/download failed:", error);
-       toast({ title: "PDF Error", description: error.message || "Could not generate or download partial PDF.", variant: "destructive" });
+       console.error("Partial HTML Statement generation/download failed:", error);
+       toast({ title: "Statement Error", description: error.message || "Could not generate or download partial statement.", variant: "destructive" });
      } finally {
-       setIsPdfGenerating(false);
+       setIsStatementGenerating(false);
      }
    };
 
-   // Calculate current balance from the loaded account state
    const currentBalance = account?.balance ?? 0;
    const balanceStatus = currentBalance >= 0 ? "CR" : "DR";
    const absCurrentBalance = Math.abs(currentBalance);
 
 
-  // --- Conditional Rendering for Loading/Error States ---
     if (authLoading) {
      return (
         <div className="flex min-h-screen items-center justify-center p-4">
@@ -690,12 +697,10 @@ export default function AccountDetailPage() {
     }
 
     if (!user) {
-        // This case should ideally be handled by the useEffect redirect,
-        // but it's good practice to have a fallback return null or a message.
-        return null; // Or a loading/redirect indicator if preferred
+        return null;
     }
 
-    if (isLoading) { // Separate loading state for account data fetching
+    if (isLoading) {
         return (
          <div className="flex min-h-screen items-center justify-center p-4">
              <Card className="w-full max-w-6xl">
@@ -713,7 +718,6 @@ export default function AccountDetailPage() {
                          <Skeleton className="h-10 w-36" />
                          <Skeleton className="h-10 w-32" />
                      </div>
-                     {/* Skeleton Table */}
                      <Table>
                          <TableHeader>
                              <TableRow>
@@ -724,13 +728,13 @@ export default function AccountDetailPage() {
                                  <TableHead className="text-right w-[120px]"><Skeleton className="h-4 w-20 ml-auto" /></TableHead>
                                  <TableHead className="text-right w-[120px]"><Skeleton className="h-4 w-20 ml-auto" /></TableHead>
                                  <TableHead className="text-right w-[130px]"><Skeleton className="h-4 w-24 ml-auto" /></TableHead>
-                                 <TableHead className="w-[70px]"><Skeleton className="h-4 w-10" /></TableHead> {/* Status */}
+                                 <TableHead className="w-[70px]"><Skeleton className="h-4 w-10" /></TableHead>
                                  <TableHead className="w-[150px]"><Skeleton className="h-4 w-28" /></TableHead>
                                  <TableHead className="w-[80px]"><Skeleton className="h-4 w-12" /></TableHead>
                              </TableRow>
                          </TableHeader>
                          <TableBody>
-                             {[...Array(5)].map((_, i) => ( // Show 5 skeleton rows
+                             {[...Array(5)].map((_, i) => (
                                  <TableRow key={i}>
                                      <TableCell><Skeleton className="h-4 w-8" /></TableCell>
                                      <TableCell><Skeleton className="h-4 w-20" /></TableCell>
@@ -739,9 +743,9 @@ export default function AccountDetailPage() {
                                      <TableCell><Skeleton className="h-4 w-20 ml-auto" /></TableCell>
                                      <TableCell><Skeleton className="h-4 w-20 ml-auto" /></TableCell>
                                      <TableCell><Skeleton className="h-4 w-24 ml-auto" /></TableCell>
-                                     <TableCell><Skeleton className="h-4 w-10" /></TableCell> {/* Status */}
+                                     <TableCell><Skeleton className="h-4 w-10" /></TableCell>
                                      <TableCell><Skeleton className="h-4 w-28" /></TableCell>
-                                     <TableCell><Skeleton className="h-8 w-8" /></TableCell> {/* Action button skeleton */}
+                                     <TableCell><Skeleton className="h-8 w-8" /></TableCell>
                                  </TableRow>
                              ))}
                          </TableBody>
@@ -755,7 +759,6 @@ export default function AccountDetailPage() {
        );
      }
 
-     // If account data loading finished but account is still null (e.g., not found)
       if (!account) {
           return (
               <div className="flex min-h-screen items-center justify-center p-4">
@@ -775,8 +778,6 @@ export default function AccountDetailPage() {
       }
 
 
-  // --- Main Render ---
-  // This part only renders if authLoading is false, user exists, isLoading is false, and account is found.
   return (
     <div className="flex min-h-screen flex-col bg-muted/40 p-4">
        <main className="flex-1 md:gap-8">
@@ -791,7 +792,7 @@ export default function AccountDetailPage() {
              <CardDescription>
                  View and manage transactions for this account. Current Balance:
                  <Badge variant={balanceStatus === "CR" ? "secondary" : "destructive"} className="ml-2 font-mono text-sm">
-                      ${absCurrentBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {balanceStatus}
+                      {`$${absCurrentBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${balanceStatus}`}
                  </Badge>
              </CardDescription>
            </CardHeader>
@@ -803,28 +804,27 @@ export default function AccountDetailPage() {
                     </Button>
                      <DropdownMenu>
                       <DropdownMenuTrigger asChild>
-                         <Button variant="outline" disabled={isPdfGenerating}>
-                           {isPdfGenerating ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileText className="mr-2 h-4 w-4" />}
-                           Create PDF
+                         <Button variant="outline" disabled={isStatementGenerating}>
+                           {isStatementGenerating ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileText className="mr-2 h-4 w-4" />}
+                           Create Statement
                           </Button>
                        </DropdownMenuTrigger>
                        <DropdownMenuContent>
                           <DropdownMenuItem
-                              onClick={() => handleGeneratePdf('whole')}
-                              disabled={isPdfGenerating || transactionsWithBalance.length === 0}
+                              onClick={() => handleGenerateStatement('whole')}
+                              disabled={isStatementGenerating || transactionsWithBalance.length === 0}
                               title={transactionsWithBalance.length === 0 ? "No transactions to export" : "Export all transactions"}>
                              Whole Account
                           </DropdownMenuItem>
                           <DropdownMenuItem
-                              onSelect={(e) => { e.preventDefault(); handleGeneratePdf('upto'); }} // Use onSelect to prevent closing and trigger action
-                              disabled={isPdfGenerating || transactionsWithBalance.length === 0}
+                              onSelect={(e) => { e.preventDefault(); handleGenerateStatement('upto'); }}
+                              disabled={isStatementGenerating || transactionsWithBalance.length === 0}
                               title={transactionsWithBalance.length === 0 ? "No transactions to export" : "Generate up to a specific transaction number"}>
                              Up to Transaction No...
                           </DropdownMenuItem>
                        </DropdownMenuContent>
                      </DropdownMenu>
                  </div>
-                 {/* TODO: Add Search/Filter Input */}
               </div>
 
              <Table>
@@ -837,9 +837,9 @@ export default function AccountDetailPage() {
                    <TableHead className="text-right w-[120px]">Debit</TableHead>
                    <TableHead className="text-right w-[120px]">Credit</TableHead>
                    <TableHead className="text-right w-[130px]">Balance</TableHead>
-                   <TableHead className="w-[70px]">Status</TableHead> {/* DR/CR Status */}
+                   <TableHead className="w-[70px]">Status</TableHead>
                    <TableHead className="w-[150px]">Code (Linked)</TableHead>
-                   <TableHead className="w-[80px]">Actions</TableHead>
+                   <TableHead className="w-[80px] text-right">Actions</TableHead>
                  </TableRow>
                </TableHeader>
                <TableBody>
@@ -848,14 +848,9 @@ export default function AccountDetailPage() {
                      const rowBalanceStatus = t.balance >= 0 ? "CR" : "DR";
                      const rowAbsBalance = Math.abs(t.balance);
                      return (
-                       <TableRow
-                         key={t.id}
-                         className={cn(
-                           "hover:bg-muted/80" // Removed row selection styling
-                         )}
-                        >
+                       <TableRow key={t.id} className={cn("hover:bg-muted/80")}>
                          <TableCell>{t.number}</TableCell>
-                         <TableCell>{new Date(t.date).toLocaleDateString()}</TableCell>
+                         <TableCell>{new Date(t.date + 'T00:00:00').toLocaleDateString()}</TableCell> {/* Ensure date is parsed correctly */}
                          <TableCell className="max-w-[250px] truncate" title={t.description}>{t.description}</TableCell>
                          <TableCell>{t.slipNumber}</TableCell>
                          <TableCell className="text-right font-mono">
@@ -870,14 +865,13 @@ export default function AccountDetailPage() {
                          <TableCell
                             className={cn(
                                 "font-semibold",
-                                rowBalanceStatus === "CR" ? "text-green-600" : "text-red-600",
-                                "dark:text-green-500 dark:text-red-500" // Optional dark mode colors
+                                rowBalanceStatus === "CR" ? "text-status-cr" : "text-status-dr"
                             )}
                          >
                              {rowBalanceStatus}
                          </TableCell>
                          <TableCell className="max-w-[150px] truncate" title={t.code}>{t.code || "-"}</TableCell>
-                         <TableCell> {/* Removed stopPropagation */}
+                         <TableCell className="text-right">
                            <DropdownMenu>
                              <DropdownMenuTrigger asChild>
                                <Button aria-haspopup="true" size="icon" variant="ghost" aria-label={`Actions for transaction ${t.slipNumber}`}>
@@ -920,50 +914,48 @@ export default function AccountDetailPage() {
 
        {/* --- Dialogs --- */}
 
-        {/* Partial PDF Generation Dialog */}
-        <Dialog open={isPartialPdfDialogOpen} onOpenChange={setIsPartialPdfDialogOpen}>
+        <Dialog open={isPartialStatementDialogOpen} onOpenChange={setIsPartialStatementDialogOpen}>
             <DialogContent className="sm:max-w-md">
                 <DialogHeader>
-                    <DialogTitle>Generate PDF Up To Transaction</DialogTitle>
+                    <DialogTitle>Generate Statement Up To Transaction</DialogTitle>
                     <DialogDescription>
-                        Enter the transaction number (No.) up to which you want to include entries in the PDF.
+                        Enter the transaction number (No.) up to which you want to include entries in the HTML statement.
                     </DialogDescription>
                 </DialogHeader>
                 <div className="grid gap-4 py-4">
                     <div className="grid grid-cols-4 items-center gap-4">
-                        <Label htmlFor="partial-pdf-number" className="text-right">
+                        <Label htmlFor="partial-statement-number" className="text-right">
                             Trans. No.
                         </Label>
                         <Input
-                            id="partial-pdf-number"
+                            id="partial-statement-number"
                             type="number"
-                            value={partialPdfTransactionNumber}
-                            onChange={(e) => setPartialPdfTransactionNumber(e.target.value)}
+                            value={partialStatementTransactionNumber}
+                            onChange={(e) => setPartialStatementTransactionNumber(e.target.value)}
                             className="col-span-3"
                             placeholder="e.g., 5"
                             min="1"
                             step="1"
-                            disabled={isPdfGenerating}
+                            disabled={isStatementGenerating}
                             required
                         />
                     </div>
                 </div>
                 <DialogFooter>
                     <DialogClose asChild>
-                        <Button type="button" variant="outline" disabled={isPdfGenerating}>Cancel</Button>
+                        <Button type="button" variant="outline" disabled={isStatementGenerating}>Cancel</Button>
                     </DialogClose>
                     <Button
                        type="button"
-                       onClick={handleGeneratePartialPdf}
-                       disabled={isPdfGenerating || !partialPdfTransactionNumber.trim()}
+                       onClick={handleGeneratePartialStatement}
+                       disabled={isStatementGenerating || !partialStatementTransactionNumber.trim()}
                     >
-                       {isPdfGenerating ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : "Generate PDF"}
+                       {isStatementGenerating ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : "Generate Statement"}
                     </Button>
                 </DialogFooter>
             </DialogContent>
         </Dialog>
 
-       {/* Add Transaction Dialog */}
        <Dialog open={isAddTransactionDialogOpen} onOpenChange={(open) => { if(!isSavingTransaction) setIsAddTransactionDialogOpen(open);}}>
           <DialogContent className="sm:max-w-md">
             <DialogHeader>
@@ -973,7 +965,6 @@ export default function AccountDetailPage() {
               </DialogDescription>
             </DialogHeader>
             <div className="grid gap-4 py-4">
-                 {/* Date */}
                  <div className="grid grid-cols-4 items-center gap-4">
                      <Label htmlFor="date" className="text-right">Date</Label>
                       <Popover>
@@ -982,7 +973,7 @@ export default function AccountDetailPage() {
                                 id="date"
                                 variant={"outline"}
                                 className={cn(
-                                     "w-full justify-start text-left font-normal col-span-3", // Use w-full
+                                     "w-full justify-start text-left font-normal col-span-3",
                                      !transactionDate && "text-muted-foreground"
                                 )}
                                 disabled={isSavingTransaction}
@@ -1001,7 +992,6 @@ export default function AccountDetailPage() {
                          </PopoverContent>
                       </Popover>
                  </div>
-                  {/* Description */}
                  <div className="grid grid-cols-4 items-center gap-4">
                     <Label htmlFor="description" className="text-right">Description</Label>
                     <Textarea
@@ -1014,7 +1004,6 @@ export default function AccountDetailPage() {
                         required
                     />
                  </div>
-                 {/* Slip Number */}
                  <div className="grid grid-cols-4 items-center gap-4">
                      <Label htmlFor="slip" className="text-right">Slip No.</Label>
                      <Input
@@ -1027,7 +1016,6 @@ export default function AccountDetailPage() {
                          required
                      />
                  </div>
-                  {/* Amount & Type */}
                  <div className="grid grid-cols-4 items-center gap-4">
                      <Label htmlFor="amount" className="text-right">Amount</Label>
                       <Input
@@ -1035,7 +1023,7 @@ export default function AccountDetailPage() {
                           type="number"
                           value={transactionAmount}
                           onChange={(e) => setTransactionAmount(e.target.value)}
-                          className="col-span-2" // Adjusted span
+                          className="col-span-2"
                           placeholder="0.00"
                           step="0.01"
                           min="0.01"
@@ -1057,7 +1045,6 @@ export default function AccountDetailPage() {
                           </SelectContent>
                        </Select>
                  </div>
-                  {/* Linked Account (Code) */}
                   <div className="grid grid-cols-4 items-center gap-4">
                       <Label htmlFor="linkedAccount" className="text-right">Linked Acct.</Label>
                       <Select
@@ -1106,7 +1093,6 @@ export default function AccountDetailPage() {
        </Dialog>
 
 
-       {/* Edit Transaction Confirmation Dialog */}
        <AlertDialog open={showEditConfirm} onOpenChange={setShowEditConfirm}>
          <AlertDialogContent>
            <AlertDialogHeader>
@@ -1123,7 +1109,6 @@ export default function AccountDetailPage() {
          </AlertDialogContent>
        </AlertDialog>
 
-        {/* Edit Transaction Form Dialog */}
         <Dialog open={isEditTransactionDialogOpen} onOpenChange={(open) => { if(!isSavingTransaction) { setIsEditTransactionDialogOpen(open); if (!open) setEditTarget(null); }}}>
           <DialogContent className="sm:max-w-md">
             <DialogHeader>
@@ -1133,7 +1118,6 @@ export default function AccountDetailPage() {
               </DialogDescription>
             </DialogHeader>
             <div className="grid gap-4 py-4">
-                {/* Date */}
                  <div className="grid grid-cols-4 items-center gap-4">
                      <Label htmlFor="edit-date" className="text-right">Date</Label>
                       <Popover>
@@ -1142,7 +1126,7 @@ export default function AccountDetailPage() {
                                 id="edit-date"
                                 variant={"outline"}
                                 className={cn(
-                                     "w-full justify-start text-left font-normal col-span-3", // Use w-full
+                                     "w-full justify-start text-left font-normal col-span-3",
                                      !transactionDate && "text-muted-foreground"
                                 )}
                                 disabled={isSavingTransaction}
@@ -1161,7 +1145,6 @@ export default function AccountDetailPage() {
                          </PopoverContent>
                       </Popover>
                  </div>
-                  {/* Description */}
                  <div className="grid grid-cols-4 items-center gap-4">
                     <Label htmlFor="edit-description" className="text-right">Description</Label>
                     <Textarea
@@ -1173,7 +1156,6 @@ export default function AccountDetailPage() {
                         required
                     />
                  </div>
-                 {/* Slip Number (Editable) */}
                  <div className="grid grid-cols-4 items-center gap-4">
                      <Label htmlFor="edit-slip" className="text-right">Slip No.</Label>
                      <Input
@@ -1185,7 +1167,6 @@ export default function AccountDetailPage() {
                          required
                      />
                  </div>
-                  {/* Amount & Type */}
                  <div className="grid grid-cols-4 items-center gap-4">
                      <Label htmlFor="edit-amount" className="text-right">Amount</Label>
                       <Input
@@ -1214,7 +1195,6 @@ export default function AccountDetailPage() {
                           </SelectContent>
                        </Select>
                  </div>
-                  {/* Linked Account (Code) */}
                   <div className="grid grid-cols-4 items-center gap-4">
                       <Label htmlFor="edit-linkedAccount" className="text-right">Linked Acct.</Label>
                       <Select
@@ -1230,8 +1210,7 @@ export default function AccountDetailPage() {
                               {allAccounts.map(acc => (
                                   <SelectItem key={acc.id} value={acc.id}>{acc.name}</SelectItem>
                               ))}
-                               {/* Optionally add the original linked account if it's no longer in 'allAccounts' but is the current selection */}
-                               {editTarget && !allAccounts.some(a => a.name === editTarget.code) &&
+                               {editTarget && !allAccounts.some(a => a.id === allAccounts.find(acc => acc.name === editTarget.code)?.id) && editTarget.code &&
                                   <SelectItem value={editTarget.accountId} disabled>
                                       {editTarget.code} (Original - Inactive/Deleted?)
                                   </SelectItem>
@@ -1256,7 +1235,6 @@ export default function AccountDetailPage() {
                       !linkedAccountId ||
                       isNaN(parseFloat(transactionAmount.toString())) ||
                       parseFloat(transactionAmount.toString()) <= 0 ||
-                      // Disable if no changes were made (optional but good UX)
                       ( editTarget &&
                           transactionDate.toISOString().split('T')[0] === editTarget.date &&
                           transactionDesc.trim() === editTarget.description &&
@@ -1273,7 +1251,6 @@ export default function AccountDetailPage() {
           </DialogContent>
         </Dialog>
 
-       {/* First Delete Confirmation Dialog */}
         <AlertDialog open={showFirstDeleteConfirm} onOpenChange={setShowFirstDeleteConfirm}>
          <AlertDialogContent>
            <AlertDialogHeader>
@@ -1290,7 +1267,6 @@ export default function AccountDetailPage() {
          </AlertDialogContent>
        </AlertDialog>
 
-        {/* Second Delete Confirmation Dialog */}
         <AlertDialog open={showSecondDeleteConfirm} onOpenChange={setShowSecondDeleteConfirm}>
          <AlertDialogContent>
            <AlertDialogHeader>
@@ -1301,7 +1277,7 @@ export default function AccountDetailPage() {
            </AlertDialogHeader>
            <AlertDialogFooter>
              <AlertDialogCancel onClick={() => setDeleteTarget(null)}>Cancel</AlertDialogCancel>
-              <Button onClick={confirmSecondDelete} variant="destructive" disabled={isLoading}> {/* Disable button while loading */}
+              <Button onClick={confirmSecondDelete} variant="destructive" disabled={isLoading}>
                  {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : "Yes, Delete Transaction"}
               </Button>
            </AlertDialogFooter>
@@ -1310,4 +1286,3 @@ export default function AccountDetailPage() {
     </div>
   );
 }
-

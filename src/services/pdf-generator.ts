@@ -1,14 +1,24 @@
 
 /**
- * Represents a PDF document.
+ * Represents a document's content.
  */
-export interface PdfDocument {
+export interface DocumentContent {
   /**
-   * The content of the PDF document as a base64 encoded string.
-   * IMPORTANT: In the mock implementation, this is base64-encoded HTML, not actual PDF data.
+   * The content of the document as a base64 encoded string.
+   * For HTML, this is base64-encoded HTML.
+   * For actual PDF, this would be base64-encoded PDF data.
    */
   content: string;
+  /**
+   * The MIME type of the content.
+   */
+  mimeType: 'text/html' | 'application/pdf';
+  /**
+   * The recommended file extension.
+   */
+  fileExtension: '.html' | '.pdf';
 }
+
 
 /**
  * Converts a string to a Base64 string, suitable for browser environments.
@@ -37,41 +47,43 @@ function safeBtoa(str: string): string {
 
 
 /**
- * Asynchronously generates a PDF document from given HTML content.
+ * Asynchronously generates an HTML document from given HTML content.
+ * THIS IS A MOCK IMPLEMENTATION FOR PDF. It actually returns HTML.
+ * A real PDF generation solution (e.g., using a library like jsPDF or a server-side service)
+ * is required to produce actual, viewable PDF files.
  *
- * @param htmlContent The HTML content to be converted to PDF.
- * @returns A promise that resolves to a PdfDocument object.
- *
- * @throws {Error} If PDF generation is not implemented.
+ * @param htmlContent The HTML content to be "processed".
+ * @returns A promise that resolves to a DocumentContent object (containing HTML).
  */
-export async function generatePdf(htmlContent: string): Promise<PdfDocument> {
-  // TODO: Implement this by calling a real PDF generation service/library (e.g., Puppeteer on a server, jsPDF on client, or an external API).
-  // The current implementation is a placeholder and will simulate a delay.
+export async function generatePdf(htmlContent: string): Promise<DocumentContent> {
+  console.warn(
+    "PDF generation is using a MOCK implementation. " +
+    "It returns base64 encoded HTML, not a real PDF. " +
+    "The downloaded file will be an HTML file for viewing purposes. " +
+    "For actual PDF output, a dedicated PDF generation library or service is required."
+  );
+  await new Promise(resolve => setTimeout(resolve, 300)); // Simulate processing time
 
-  console.warn("PDF generation is using mock data. Returning base64 encoded HTML, not a real PDF.");
-  await new Promise(resolve => setTimeout(resolve, 500)); // Simulate processing time
-
-  // Create a placeholder Base64 by encoding the HTML itself using a safer method
-  const placeholderBase64 = typeof Buffer !== 'undefined'
+  const base64Html = typeof Buffer !== 'undefined'
     ? Buffer.from(htmlContent).toString('base64') // Use Buffer if on Node.js-like env
     : safeBtoa(htmlContent); // Use safeBtoa for browser env
 
 
   return {
-    content: placeholderBase64, // Return placeholder Base64
+    content: base64Html,
+    mimeType: 'text/html', // Explicitly set to HTML
+    fileExtension: '.html'   // Explicitly set to .html
   };
-
-  // To make it throw an error if used prematurely:
-  // throw new Error("PDF generation service is not implemented yet.");
 }
 
 /**
- * Helper function to trigger PDF download in the browser.
+ * Helper function to trigger document download in the browser.
  * Decodes base64 content and creates a Blob for download.
- * @param base64Content The Base64 encoded PDF content.
- * @param filename The desired filename for the download.
+ * @param base64Content The Base64 encoded document content.
+ * @param filename The desired filename for the download (extension will be added based on mimeType).
+ * @param mimeType The MIME type of the document ('text/html' or 'application/pdf').
  */
-export function downloadPdf(base64Content: string, filename: string) {
+export function downloadPdf(base64Content: string, filename: string, mimeType: 'text/html' | 'application/pdf' = 'text/html') {
     if (typeof window === 'undefined' || typeof document === 'undefined' || typeof atob === 'undefined') {
         console.error("Download function can only be called on the client-side browser environment.");
         return;
@@ -85,11 +97,9 @@ export function downloadPdf(base64Content: string, filename: string) {
         }
         const byteArray = new Uint8Array(byteNumbers);
 
-        // Define the MIME type for the PDF
-        const mimeType = 'application/pdf';
-        // WARNING: The MOCK generatePdf function returns base64 HTML. Downloading this as PDF
-        // will result in a file that PDF viewers cannot open. A *real* PDF generation
-        // implementation is needed to create a viewable PDF file.
+        // Determine file extension based on mimeType
+        const fileExtension = mimeType === 'application/pdf' ? '.pdf' : '.html';
+        const filenameWithExtension = filename.endsWith(fileExtension) ? filename : filename + fileExtension;
 
         // Create Blob and URL
         const blob = new Blob([byteArray], { type: mimeType });
@@ -98,7 +108,7 @@ export function downloadPdf(base64Content: string, filename: string) {
         // Create link and trigger download
         const link = document.createElement('a');
         link.href = url;
-        link.download = filename;
+        link.download = filenameWithExtension; // Use filename with correct extension
         document.body.appendChild(link); // Append link to body (required for Firefox)
         link.click(); // Programmatically click the link
         document.body.removeChild(link); // Remove link from body
@@ -109,6 +119,9 @@ export function downloadPdf(base64Content: string, filename: string) {
     } catch (e) {
         console.error("Error decoding Base64 or triggering download:", e);
         // Provide a more informative message to the user
-        alert(`Could not download the file '${filename}'. The data might be corrupted or PDF generation failed. Check console for details. Note: The current PDF generation is a mock and produces invalid PDF data.`);
+        const alertMessage = mimeType === 'application/pdf'
+          ? `Could not download the PDF file '${filename}'. The data might be corrupted or PDF generation failed. Note: The current PDF generation is a mock and produces invalid PDF data for PDF viewers.`
+          : `Could not download the statement file '${filename}'. The data might be corrupted or generation failed.`;
+        alert(`${alertMessage} Check console for details.`);
     }
 }
