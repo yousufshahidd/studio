@@ -1,10 +1,9 @@
 
-// src/app/dashboard/page.tsx
 "use client";
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { useAuth } from "@/lib/firebase/client";
+// import { useAuth } from "@/lib/firebase/client"; // Firebase removed
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { PlusCircle, Edit, Trash2, Eye, LogOut, MoreVertical, Loader2, AlertCircle } from "lucide-react";
@@ -48,11 +47,16 @@ import { useToast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
 import ThemeToggle from "@/components/theme-toggle";
 import type { Account } from "@/types";
-import { mockDb, getNextAccountId, updateAccountBalance } from "@/lib/mock-data"; // Import mock data and helpers
+import { 
+    getAccounts as getLocalAccounts, 
+    addAccount as addLocalAccount,
+    updateAccount as updateLocalAccount,
+    deleteAccount as deleteLocalAccount,
+    updateAccountBalance as updateLocalAccountBalance // Re-exporting for direct use if needed
+} from "@/lib/local-data-manager"; 
 import { cn } from "@/lib/utils";
 
 export default function DashboardPage() {
-  const { user, loading, signOut } = useAuth();
   const router = useRouter();
   const { toast } = useToast();
   const [accounts, setAccounts] = React.useState<Account[]>([]);
@@ -65,190 +69,148 @@ export default function DashboardPage() {
   const [isSavingAccount, setIsSavingAccount] = React.useState(false);
   const [accountToDelete, setAccountToDelete] = React.useState<Account | null>(null);
 
-  const userId = user?.uid || "user1"; // Use actual UID if available, else default mock user
+  const fetchAccountsData = React.useCallback(() => {
+    setIsLoadingAccounts(true);
+    try {
+      // Simulate async for consistency, though localStorage is sync
+      setTimeout(() => {
+        const localAccounts = getLocalAccounts();
+        // Balances should be managed by local-data-manager now
+        setAccounts(localAccounts);
+        setIsLoadingAccounts(false);
+      }, 200); // Shorter delay
+    } catch (error: any) {
+      console.error("Dashboard: Error fetching accounts from localStorage:", error);
+      toast({
+        title: "Error Loading Accounts",
+        description: "Could not load accounts data. Check console for details.",
+        variant: "destructive",
+      });
+      setIsLoadingAccounts(false);
+    }
+  }, [toast]);
 
   React.useEffect(() => {
-    if (!loading && !user) {
-      router.push("/"); // Redirect to login if not authenticated
-    } else if (user) {
-      setIsLoadingAccounts(true);
-      // Simulate fetching accounts from mock data
-      setTimeout(() => {
-        // Recalculate all balances on load (simple approach for mock data)
-        const currentAccounts = mockDb[userId]?.accounts || [];
-        currentAccounts.forEach(acc => updateAccountBalance(acc.id, userId));
-
-        setAccounts([...(mockDb[userId]?.accounts || [])]); // Use spread to trigger re-render
-        setIsLoadingAccounts(false);
-      }, 500); // Shorter delay now
-    }
-  }, [user, loading, router, userId]);
-
-  // --- Account Management Functions ---
+    fetchAccountsData();
+  }, [fetchAccountsData]);
 
   const openAddAccountDialog = () => {
-    setNewAccountName(""); // Reset name field
+    setNewAccountName("");
     setIsAddAccountDialogOpen(true);
   };
 
   const handleAddAccount = () => {
     if (!newAccountName.trim()) {
-      toast({ title: "Error", description: "Account name cannot be empty.", variant: "destructive" });
+      toast({ title: "Validation Error", description: "Account name cannot be empty.", variant: "destructive" });
       return;
     }
-     // Check for duplicate name (case-insensitive)
      if (accounts.some(acc => acc.name.toLowerCase() === newAccountName.trim().toLowerCase())) {
-        toast({ title: "Error", description: "An account with this name already exists.", variant: "destructive" });
+        toast({ title: "Duplicate Name", description: "An account with this name already exists.", variant: "destructive" });
         return;
       }
 
     setIsSavingAccount(true);
-    // Simulate adding account to mock data
     setTimeout(() => {
-      const newAccount: Account = {
-        id: getNextAccountId(),
-        name: newAccountName.trim(),
-        balance: 0, // Initial balance is 0
-      };
-      if (!mockDb[userId]) {
-        mockDb[userId] = { accounts: [], transactions: [] };
+      try {
+        const newAccount = addLocalAccount(newAccountName.trim());
+        fetchAccountsData(); // Refresh list
+        toast({
+          title: "Account Added",
+          description: `Account "${newAccount.name}" has been successfully added.`,
+        });
+      } catch (error) {
+         toast({ title: "Error", description: "Failed to add account.", variant: "destructive" });
+      } finally {
+        setIsSavingAccount(false);
+        setIsAddAccountDialogOpen(false);
       }
-      mockDb[userId].accounts.push(newAccount);
-      setAccounts([...mockDb[userId].accounts]); // Update state
-
-      toast({
-        title: "Account Added",
-        description: `Account "${newAccount.name}" has been successfully added.`,
-      });
-      setIsSavingAccount(false);
-      setIsAddAccountDialogOpen(false);
-    }, 500); // Simulate save delay
+    }, 300);
   };
 
   const openEditAccountDialog = (account: Account) => {
     setAccountToEdit(account);
-    setEditAccountName(account.name); // Pre-fill current name
+    setEditAccountName(account.name);
     setIsEditAccountDialogOpen(true);
   };
 
   const handleEditAccount = () => {
     if (!accountToEdit || !editAccountName.trim()) {
-        toast({ title: "Error", description: "Account name cannot be empty.", variant: "destructive" });
+        toast({ title: "Validation Error", description: "Account name cannot be empty.", variant: "destructive" });
         return;
     }
-     // Check for duplicate name (excluding the account being edited)
      if (accounts.some(acc => acc.id !== accountToEdit.id && acc.name.toLowerCase() === editAccountName.trim().toLowerCase())) {
-        toast({ title: "Error", description: "Another account with this name already exists.", variant: "destructive" });
+        toast({ title: "Duplicate Name", description: "Another account with this name already exists.", variant: "destructive" });
         return;
       }
 
     setIsSavingAccount(true);
-    // Simulate editing account in mock data
     setTimeout(() => {
-      const accountIndex = mockDb[userId].accounts.findIndex(acc => acc.id === accountToEdit.id);
-      if (accountIndex !== -1) {
-         const updatedName = editAccountName.trim();
-         // Update account name
-         mockDb[userId].accounts[accountIndex].name = updatedName;
-
-         // Update the 'code' (linked account name) in all transactions referencing this account
-         mockDb[userId].transactions = mockDb[userId].transactions.map(t => {
-           if (t.code === accountToEdit.name) {
-             return { ...t, code: updatedName };
-           }
-           return t;
-         });
-
-         setAccounts([...mockDb[userId].accounts]); // Update state
-
-         toast({
-           title: "Account Updated",
-           description: `Account "${accountToEdit.name}" has been renamed to "${updatedName}". References updated.`,
-         });
-      } else {
-         toast({ title: "Error", description: "Account not found for editing.", variant: "destructive" });
+      try {
+        const updatedAccount = updateLocalAccount(accountToEdit.id, editAccountName.trim());
+        if (updatedAccount) {
+           fetchAccountsData(); // Refresh list
+           toast({
+             title: "Account Updated",
+             description: `Account "${accountToEdit.name}" has been renamed to "${updatedAccount.name}". References updated.`,
+           });
+        } else {
+            toast({ title: "Error", description: "Account not found for editing.", variant: "destructive" });
+        }
+      } catch (error) {
+           toast({ title: "Error", description: "Failed to update account.", variant: "destructive" });
+      } finally {
+        setIsSavingAccount(false);
+        setIsEditAccountDialogOpen(false);
+        setAccountToEdit(null);
       }
-
-      setIsSavingAccount(false);
-      setIsEditAccountDialogOpen(false);
-      setAccountToEdit(null); // Clear editing state
-    }, 500); // Simulate save delay
+    }, 300);
   };
 
  const promptDeleteAccount = (account: Account) => {
     setAccountToDelete(account);
-    // The AlertDialogTrigger handles opening the dialog
   };
 
   const handleDeleteAccount = () => {
     if (!accountToDelete) return;
 
-    setIsLoadingAccounts(true); // Use loading state during deletion
-    // Simulate deleting account and its transactions from mock data
+    setIsLoadingAccounts(true); 
     setTimeout(() => {
-      const accountIdToDelete = accountToDelete.id;
-      const accountName = accountToDelete.name;
-
-      // Filter out the account
-      mockDb[userId].accounts = mockDb[userId].accounts.filter(acc => acc.id !== accountIdToDelete);
-
-      // Filter out transactions belonging to the deleted account
-      // AND transactions linked TO the deleted account (via code)
-      const transactionsToDelete = mockDb[userId].transactions.filter(t => t.accountId === accountIdToDelete || t.code === accountName);
-      const slipsToDelete = transactionsToDelete.map(t => t.slipNumber);
-
-      // Remove transactions belonging to the account OR linked TO the account OR sharing a slip number with affected transactions
-      mockDb[userId].transactions = mockDb[userId].transactions.filter(t =>
-          t.accountId !== accountIdToDelete && // Not in the deleted account
-          t.code !== accountName && // Not linked TO the deleted account
-          !slipsToDelete.includes(t.slipNumber) // Not part of the same double-entry
-       );
-
-      // Recalculate balances for *all remaining* accounts (simplest for mock data)
-       mockDb[userId].accounts.forEach(acc => updateAccountBalance(acc.id, userId));
-
-      setAccounts([...mockDb[userId].accounts]); // Update state
-
-      toast({
-        title: "Account Deleted",
-        description: `Account "${accountName}" and its transactions have been removed.`,
-        variant: "destructive",
-      });
-      setIsLoadingAccounts(false);
-      setAccountToDelete(null); // Clear delete state
-    }, 500); // Simulate delete delay
+      try {
+        const success = deleteLocalAccount(accountToDelete.id);
+        if (success) {
+          fetchAccountsData(); // Refresh list
+          toast({
+            title: "Account Deleted",
+            description: `Account "${accountToDelete.name}" and its transactions have been removed.`,
+            variant: "destructive", // Or default
+          });
+        } else {
+            toast({ title: "Error", description: "Failed to delete account.", variant: "destructive" });
+        }
+      } catch (error) {
+         toast({ title: "Error", description: "An error occurred while deleting the account.", variant: "destructive" });
+      } finally {
+        setIsLoadingAccounts(false);
+        setAccountToDelete(null);
+      }
+    }, 300);
   };
-
-
-  // --- Other Handlers ---
 
   const handleAccountClick = (accountId: string) => {
     router.push(`/account/${accountId}`);
   };
 
-  const handleLogout = async () => {
-    try {
-      await signOut();
-      router.push("/");
-      toast({ title: "Logged Out", description: "You have been successfully logged out." });
-    } catch (error) {
-      console.error("Logout failed:", error);
-      toast({ title: "Logout Failed", description: "Could not log you out. Please try again.", variant: "destructive" });
-    }
-  };
+  // Logout functionality removed as there is no auth
 
-  // --- Render Logic ---
-
-  if (loading || isLoadingAccounts) {
+  if (isLoadingAccounts) {
     return (
       <div className="flex min-h-screen items-center justify-center">
         <Card className="w-full max-w-4xl mx-auto">
            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
              <CardTitle className="text-2xl font-bold">Dashboard</CardTitle>
               <div className="flex items-center gap-2">
-                <Skeleton className="h-8 w-20" />
-                <Skeleton className="h-8 w-8 rounded-full" />
-             </div>
+                <Skeleton className="h-8 w-20" /> {/* Placeholder for theme toggle or other actions */}
+              </div>
            </CardHeader>
            <CardContent>
               <div className="flex justify-between items-center mb-4">
@@ -261,28 +223,13 @@ export default function DashboardPage() {
     );
   }
 
-  if (!user) {
-    return null; // Should be redirected by useEffect
-  }
-
   return (
     <div className="flex min-h-screen flex-col bg-muted/40">
       <header className="sticky top-0 z-30 flex h-14 items-center gap-4 border-b bg-background px-4 sm:static sm:h-auto sm:border-0 sm:bg-transparent sm:px-6 py-4">
-         <h1 className="text-xl font-semibold">AccountBook Pro</h1>
+         <h1 className="text-xl font-semibold">AccountBook Pro (Local)</h1>
          <div className="ml-auto flex items-center gap-4">
             <ThemeToggle />
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="icon" className="overflow-hidden rounded-full">
-                   <span className="sr-only">User menu</span>
-                   {user.email?.charAt(0).toUpperCase() || 'U'}
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={() => router.push('/profile')}>Profile</DropdownMenuItem>
-                <DropdownMenuItem onClick={handleLogout}>Logout <LogOut className="ml-2 h-4 w-4" /></DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+            {/* User menu removed */}
          </div>
       </header>
       <main className="flex-1 p-4 sm:px-6 sm:py-0 md:gap-8">
@@ -325,14 +272,12 @@ export default function DashboardPage() {
                         >
                             <TableCell className="font-medium">{account.name}</TableCell>
                             <TableCell className="text-right font-mono">
-                                {/* Display calculated/stored balance */}
                                 ${absBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                             </TableCell>
                              <TableCell
                                 className={cn(
                                     "text-right font-semibold w-[80px]",
-                                    balanceStatus === "CR" ? "text-green-600" : "text-red-600",
-                                    "dark:text-green-500 dark:text-red-500" // Optional dark mode colors
+                                    balanceStatus === "CR" ? "text-status-cr" : "text-status-dr"
                                 )}
                              >
                                  {balanceStatus}
@@ -340,13 +285,12 @@ export default function DashboardPage() {
                             <TableCell className="text-right">
                                 <DropdownMenu>
                                 <DropdownMenuTrigger asChild>
-                                    {/* Prevent row click when clicking the trigger */}
                                     <Button
                                         aria-haspopup="true"
                                         size="icon"
                                         variant="ghost"
                                         onClick={(e) => e.stopPropagation()}
-                                        onKeyDown={(e) => e.stopPropagation()} // Prevent triggering row click on space/enter
+                                        onKeyDown={(e) => e.stopPropagation()} 
                                         aria-label={`Actions for ${account.name}`}
                                     >
                                     <MoreVertical className="h-4 w-4" />
@@ -362,7 +306,6 @@ export default function DashboardPage() {
                                     </DropdownMenuItem>
                                     <AlertDialog>
                                     <AlertDialogTrigger asChild>
-                                        {/* Use onSelect to prevent menu close and trigger action */}
                                         <DropdownMenuItem
                                             onSelect={(e) => { e.preventDefault(); e.stopPropagation(); promptDeleteAccount(account); }}
                                             className="text-destructive focus:bg-destructive/10 focus:text-destructive"
@@ -370,8 +313,7 @@ export default function DashboardPage() {
                                         <Trash2 className="mr-2 h-4 w-4" /> Delete
                                         </DropdownMenuItem>
                                     </AlertDialogTrigger>
-                                    {/* Delete Confirmation Dialog Content */}
-                                    <AlertDialogContent onClick={(e) => e.stopPropagation()}> {/* Prevent row click */}
+                                    <AlertDialogContent onClick={(e) => e.stopPropagation()}> 
                                         <AlertDialogHeader>
                                         <AlertDialogTitle className="flex items-center"><AlertCircle className="text-destructive mr-2 h-5 w-5" />Are you absolutely sure?</AlertDialogTitle>
                                         <AlertDialogDescription>
@@ -383,7 +325,7 @@ export default function DashboardPage() {
                                         <AlertDialogCancel onClick={() => setAccountToDelete(null)}>Cancel</AlertDialogCancel>
                                         <AlertDialogAction
                                             variant="destructive"
-                                            onClick={handleDeleteAccount} // Call the actual delete handler
+                                            onClick={handleDeleteAccount}
                                             >
                                             Yes, delete account
                                             </AlertDialogAction>
@@ -482,8 +424,6 @@ export default function DashboardPage() {
             </DialogFooter>
           </DialogContent>
        </Dialog>
-
     </div>
   );
 }
-

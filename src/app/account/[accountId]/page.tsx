@@ -1,13 +1,12 @@
 
-// src/app/account/[accountId]/page.tsx
 "use client";
 
 import * as React from "react";
 import { useParams, useRouter } from "next/navigation";
-import { useAuth } from "@/lib/firebase/client";
+// import { useAuth } from "@/lib/firebase/client"; // Firebase removed
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
-import { ArrowLeft, PlusCircle, Edit, Trash2, FileText, MoreVertical, Loader2, AlertCircle, CheckCircle, Calendar as CalendarIcon } from "lucide-react";
+import { ArrowLeft, PlusCircle, Edit, Trash2, FileText, MoreVertical, Loader2, AlertCircle, Calendar as CalendarIcon } from "lucide-react";
 import {
   Table,
   TableBody,
@@ -57,26 +56,22 @@ import { useToast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import { generatePdf, downloadPdf } from "@/services/pdf-generator"; // generatePdf is now for HTML DocumentContent
+import { generatePdf, downloadPdf } from "@/services/pdf-generator";
 import type { Account, Transaction, TransactionWithBalance } from "@/types";
-import type { DocumentContent } from "@/services/pdf-generator"; // Import DocumentContent
+import type { DocumentContent } from "@/services/pdf-generator";
 import {
-    mockDb,
-    calculateRunningBalance,
-    updateAccountBalance,
-    getNextTransactionNumber,
-    getNextTransactionId,
-    slipNumberExists
-} from "@/lib/mock-data";
+    getAccountById as getLocalAccountById,
+    getAccounts as getLocalAccounts,
+    calculateRunningBalance as calculateLocalRunningBalance,
+    addTransaction as addLocalTransaction,
+    editTransaction as editLocalTransaction,
+    deleteTransaction as deleteLocalTransaction,
+    slipNumberExists as localSlipNumberExists,
+    updateAccountBalance as updateLocalAccountBalance, // if needed directly
+} from "@/lib/local-data-manager";
 import { format } from "date-fns";
 
-
-// Function to prepare HTML for download (previously generateAccountPdf)
 async function prepareAccountHtmlForDownload(accountName: string, transactions: TransactionWithBalance[]): Promise<DocumentContent> {
-  console.log(`Preparing HTML statement for account: ${accountName}`);
-  console.log("Including Transactions (Slips):", transactions.map(t => t.slipNumber));
-
-  // Determine final balance and DR/CR status from the last transaction in the provided list
   const finalBalanceEntry = transactions.length > 0 ? transactions[transactions.length - 1] : null;
   const finalBalanceValue = finalBalanceEntry?.balance ?? 0;
   const finalBalanceStatus = finalBalanceValue >= 0 ? "CR" : "DR";
@@ -139,10 +134,8 @@ async function prepareAccountHtmlForDownload(accountName: string, transactions: 
     </body>
     </html>
   `;
-
   try {
-    // generatePdf now returns DocumentContent which includes mimeType and fileExtension
-    const docDetails = await generatePdf(htmlContent); // This service call name remains for consistency with Genkit guidelines if it were a real service.
+    const docDetails = await generatePdf(htmlContent);
     return docDetails;
   } catch (error) {
     console.error("Error preparing HTML document via service:", error);
@@ -153,14 +146,13 @@ async function prepareAccountHtmlForDownload(accountName: string, transactions: 
 
 export default function AccountDetailPage() {
   const { accountId } = useParams<{ accountId: string }>();
-  const { user, loading: authLoading } = useAuth();
   const router = useRouter();
   const { toast } = useToast();
   const [account, setAccount] = React.useState<Account | null>(null);
   const [transactionsWithBalance, setTransactionsWithBalance] = React.useState<TransactionWithBalance[]>([]);
   const [allAccounts, setAllAccounts] = React.useState<Account[]>([]);
   const [isLoading, setIsLoading] = React.useState(true);
-  const [isStatementGenerating, setIsStatementGenerating] = React.useState(false); // Renamed from isPdfGenerating
+  const [isStatementGenerating, setIsStatementGenerating] = React.useState(false);
   const [deleteTarget, setDeleteTarget] = React.useState<TransactionWithBalance | null>(null);
   const [showFirstDeleteConfirm, setShowFirstDeleteConfirm] = React.useState(false);
   const [showSecondDeleteConfirm, setShowSecondDeleteConfirm] = React.useState(false);
@@ -169,9 +161,8 @@ export default function AccountDetailPage() {
   const [isAddTransactionDialogOpen, setIsAddTransactionDialogOpen] = React.useState(false);
   const [isEditTransactionDialogOpen, setIsEditTransactionDialogOpen] = React.useState(false);
   const [isSavingTransaction, setIsSavingTransaction] = React.useState(false);
-  const [isPartialStatementDialogOpen, setIsPartialStatementDialogOpen] = React.useState(false); // Renamed
-  const [partialStatementTransactionNumber, setPartialStatementTransactionNumber] = React.useState<string>(""); // Renamed
-
+  const [isPartialStatementDialogOpen, setIsPartialStatementDialogOpen] = React.useState(false);
+  const [partialStatementTransactionNumber, setPartialStatementTransactionNumber] = React.useState<string>("");
 
    const [transactionDate, setTransactionDate] = React.useState<Date | undefined>(new Date());
    const [transactionDesc, setTransactionDesc] = React.useState("");
@@ -180,43 +171,42 @@ export default function AccountDetailPage() {
    const [transactionType, setTransactionType] = React.useState<"debit" | "credit">("debit");
    const [linkedAccountId, setLinkedAccountId] = React.useState<string>("");
 
-
-  const userId = user?.uid || "user1";
-
   const loadAccountData = React.useCallback(() => {
-    if (!accountId || !mockDb[userId]) {
-       toast({ title: "Error", description: "Account data not available.", variant: "destructive" });
+    if (!accountId) {
+       toast({ title: "Error", description: "Account ID not available.", variant: "destructive" });
        router.push("/dashboard");
        return;
     }
      setIsLoading(true);
+     setTimeout(() => { // Simulate async
+       try {
+        const currentAccountData = getLocalAccountById(accountId);
+        if (currentAccountData) {
+          setAccount(currentAccountData);
+          const allLocalAccounts = getLocalAccounts();
+          setAllAccounts(allLocalAccounts.filter(acc => acc.id !== accountId));
 
-     setTimeout(() => {
-       const currentAccountData = mockDb[userId].accounts.find(acc => acc.id === accountId);
-       if (currentAccountData) {
-         setAccount(currentAccountData);
-         setAllAccounts(mockDb[userId].accounts.filter(acc => acc.id !== accountId));
-
-         const { transactions, finalBalance } = calculateRunningBalance(accountId, userId);
-         setTransactionsWithBalance(transactions);
-         // Update the account's balance directly from the calculation for consistency
-         setAccount(prev => prev ? { ...prev, balance: finalBalance } : null);
-
-       } else {
-         toast({ title: "Error", description: "Account not found.", variant: "destructive" });
+          const { transactions, finalBalance } = calculateLocalRunningBalance(accountId);
+          setTransactionsWithBalance(transactions);
+          setAccount(prev => prev ? { ...prev, balance: finalBalance } : null);
+        } else {
+          toast({ title: "Error", description: "Account not found.", variant: "destructive" });
+          router.push("/dashboard");
+        }
+       } catch (error) {
+         console.error("Error loading account data from localStorage:", error);
+         toast({ title: "Error", description: "Could not load account data.", variant: "destructive" });
          router.push("/dashboard");
        }
        setIsLoading(false);
      }, 300);
-  }, [accountId, userId, router, toast]);
+  }, [accountId, router, toast]);
 
   React.useEffect(() => {
-    if (!authLoading && !user) {
-      router.push("/");
-    } else if (user && accountId) {
+    if (accountId) {
         loadAccountData();
     }
-  }, [user, authLoading, accountId, router, loadAccountData]);
+  }, [accountId, loadAccountData]);
 
 
   const openAddTransactionDialog = () => {
@@ -240,13 +230,13 @@ export default function AccountDetailPage() {
        return;
      }
       const slip = transactionSlip.trim();
-      const slipCheck = slipNumberExists(slip, userId);
+      const slipCheck = localSlipNumberExists(slip);
       if (slipCheck.exists) {
          toast({
              title: "Duplicate Slip Error",
              description: `Slip number "${slip}" already exists in transaction (No. ${slipCheck.conflictingTransaction?.number}) of account "${slipCheck.conflictingAccountName}". Please use a unique one.`,
              variant: "destructive",
-             duration: 7000 // Longer duration for more info
+             duration: 7000 
          });
          return;
      }
@@ -258,65 +248,36 @@ export default function AccountDetailPage() {
 
      setIsSavingTransaction(true);
      setTimeout(() => {
-         const currentAccId = accountId!;
-         const linkedAccId = linkedAccountId;
-         const linkedAcc = mockDb[userId].accounts.find(a => a.id === linkedAccId);
-         const currentAcc = mockDb[userId].accounts.find(a => a.id === currentAccId);
-
-         if(!linkedAcc || !currentAcc) {
-             toast({ title: "Error", description: "Account details could not be retrieved.", variant: "destructive" });
-             setIsSavingTransaction(false);
-             return;
+       try {
+         const details = {
+           date: transactionDate.toISOString().split('T')[0],
+           description: transactionDesc.trim(),
+           slipNumber: slip,
+           type: transactionType,
+           amount: amount,
+         };
+         const result = addLocalTransaction(accountId!, linkedAccountId, details);
+         if (result) {
+           loadAccountData();
+           toast({
+               title: "Transaction Added",
+               description: `Transaction ${slip} recorded.`,
+           });
+         } else {
+            toast({ title: "Error", description: "Failed to add transaction. Accounts might be invalid.", variant: "destructive" });
          }
-
-         const dateISO = transactionDate.toISOString().split('T')[0];
-         const desc = transactionDesc.trim();
-         const currentAccName = currentAcc.name;
-         const linkedAccName = linkedAcc.name;
-
-         const t1: Transaction = {
-             id: getNextTransactionId(),
-             accountId: currentAccId,
-             number: getNextTransactionNumber(currentAccId, userId),
-             date: dateISO,
-             description: desc,
-             slipNumber: slip,
-             code: linkedAccName,
-             [transactionType]: amount,
-             ...(transactionType === 'debit' ? { credit: undefined } : { debit: undefined }),
-         };
-
-          const oppositeType = transactionType === 'debit' ? 'credit' : 'debit';
-         const t2: Transaction = {
-             id: getNextTransactionId(),
-             accountId: linkedAccId,
-             number: getNextTransactionNumber(linkedAccId, userId),
-             date: dateISO,
-             description: desc,
-             slipNumber: slip,
-             code: currentAccName,
-             [oppositeType]: amount,
-             ...(oppositeType === 'debit' ? { credit: undefined } : { debit: undefined }),
-         };
-
-         mockDb[userId].transactions.push(t1, t2);
-         updateAccountBalance(currentAccId, userId);
-         updateAccountBalance(linkedAccId, userId);
-         loadAccountData();
-
-         toast({
-             title: "Transaction Added",
-             description: `Transaction ${slip} recorded in ${currentAccName} and ${linkedAccName}.`,
-         });
+       } catch (error) {
+            toast({ title: "Error", description: "An error occurred while adding transaction.", variant: "destructive" });
+       } finally {
          setIsSavingTransaction(false);
          setIsAddTransactionDialogOpen(false);
+       }
      }, 500);
  };
 
 
   const handleEditTransaction = (transaction: Transaction) => {
     const linkedAcc = allAccounts.find(acc => acc.name === transaction?.code);
-    // Also allow editing if the code refers to the current account's name (self-referential placeholder or error)
     const isLinkedToSelf = account?.name === transaction?.code;
 
     if (!linkedAcc && !isLinkedToSelf) {
@@ -347,160 +308,75 @@ export default function AccountDetailPage() {
             toast({ title: "Error", description: "No transaction selected for editing.", variant: "destructive" });
             return;
       }
-
-        if (!transactionDate || !transactionDesc.trim() || !transactionSlip.trim() || !transactionAmount || !linkedAccountId) {
-           toast({ title: "Validation Error", description: "Please fill all transaction fields.", variant: "destructive" });
-           return;
-        }
-        const amount = parseFloat(transactionAmount.toString());
-        if (isNaN(amount) || amount <= 0) {
-           toast({ title: "Validation Error", description: "Please enter a valid positive amount.", variant: "destructive" });
-           return;
-        }
-        const slip = transactionSlip.trim();
-        if (slip !== editTarget.slipNumber) {
-            const slipCheck = slipNumberExists(slip, userId);
-            if (slipCheck.exists) {
-                toast({
-                    title: "Duplicate Slip Error",
-                    description: `Slip number "${slip}" already exists in transaction (No. ${slipCheck.conflictingTransaction?.number}) of account "${slipCheck.conflictingAccountName}". Please use a unique one.`,
-                    variant: "destructive",
-                    duration: 7000
-                });
-                return;
-            }
-        }
-        const linkedAccExists = allAccounts.some(acc => acc.id === linkedAccountId);
-        if (!linkedAccExists) {
-           toast({ title: "Validation Error", description: "Selected linked account is invalid.", variant: "destructive" });
-           return;
-        }
+      if (!transactionDate || !transactionDesc.trim() || !transactionSlip.trim() || !transactionAmount || !linkedAccountId) {
+         toast({ title: "Validation Error", description: "Please fill all transaction fields.", variant: "destructive" });
+         return;
+      }
+      const amount = parseFloat(transactionAmount.toString());
+      if (isNaN(amount) || amount <= 0) {
+         toast({ title: "Validation Error", description: "Please enter a valid positive amount.", variant: "destructive" });
+         return;
+      }
+      const slip = transactionSlip.trim();
+      if (slip !== editTarget.slipNumber) {
+          const slipCheck = localSlipNumberExists(slip);
+          if (slipCheck.exists) {
+              toast({
+                  title: "Duplicate Slip Error",
+                  description: `Slip number "${slip}" already exists in transaction (No. ${slipCheck.conflictingTransaction?.number}) of account "${slipCheck.conflictingAccountName}". Please use a unique one.`,
+                  variant: "destructive",
+                  duration: 7000
+              });
+              return;
+          }
+      }
+      const linkedAccExists = allAccounts.some(acc => acc.id === linkedAccountId);
+      if (!linkedAccExists) {
+         toast({ title: "Validation Error", description: "Selected linked account is invalid.", variant: "destructive" });
+         return;
+      }
 
       setIsSavingTransaction(true);
       setTimeout(() => {
-          const currentAccId = accountId!;
-          const newLinkedAccId = linkedAccountId;
-
-          const currentAcc = mockDb[userId].accounts.find(a => a.id === currentAccId);
-          const newLinkedAcc = mockDb[userId].accounts.find(a => a.id === newLinkedAccId);
-
-           const oldLinkedAcc = mockDb[userId].accounts.find(a => a.name === editTarget.code); // Find by original code
-           const oldLinkedAccId = oldLinkedAcc?.id;
-
-
-          if (!newLinkedAcc || !currentAcc || !oldLinkedAccId ) {
-              toast({ title: "Error", description: "Account details are missing or invalid for edit operation.", variant: "destructive" });
-              setIsSavingTransaction(false);
-              return;
-          }
-
-          const dateISO = transactionDate.toISOString().split('T')[0];
-          const desc = transactionDesc.trim();
-          const currentAccName = currentAcc.name;
-          const newLinkedAccName = newLinkedAcc.name;
-          const originalSlip = editTarget.slipNumber;
-
-          const transactionIndex1 = mockDb[userId].transactions.findIndex(t => t.slipNumber === originalSlip && t.accountId === currentAccId);
-          const transactionIndex2 = mockDb[userId].transactions.findIndex(t => t.slipNumber === originalSlip && t.accountId === oldLinkedAccId);
-
-          if (transactionIndex1 === -1 ) {
-              toast({ title: "Error", description: "Could not find original transaction in current account.", variant: "destructive" });
-              setIsSavingTransaction(false);
-              return;
-          }
-           if( transactionIndex2 === -1 && currentAccId !== oldLinkedAccId) { // Only error if it's a different account
-               toast({ title: "Error", description: `Could not find the original linked transaction in account "${editTarget.code}". It might have been deleted or modified separately.`, variant: "destructive" });
-               setIsSavingTransaction(false);
-               return;
-          }
-
-
-          const updatedT1: Transaction = {
-              ...mockDb[userId].transactions[transactionIndex1],
-              date: dateISO,
-              description: desc,
-              slipNumber: slip,
-              code: newLinkedAccName,
-              debit: transactionType === 'debit' ? amount : undefined,
-              credit: transactionType === 'credit' ? amount : undefined,
-          };
-
-          const oppositeType = transactionType === 'debit' ? 'credit' : 'debit';
-          // Only update t2 if it was found (i.e., not a self-linked transaction or similar oddity)
-          if (transactionIndex2 !== -1) {
-            const updatedT2: Transaction = {
-                ...mockDb[userId].transactions[transactionIndex2],
-                accountId: newLinkedAccId,
-                date: dateISO,
-                description: desc,
-                slipNumber: slip,
-                code: currentAccName,
-                debit: oppositeType === 'debit' ? amount : undefined,
-                credit: oppositeType === 'credit' ? amount : undefined,
+        try {
+            const details = {
+                date: transactionDate.toISOString().split('T')[0],
+                description: transactionDesc.trim(),
+                slipNumber: slip, // new slip from form
+                type: transactionType,
+                amount: amount,
             };
-             mockDb[userId].transactions[transactionIndex2] = updatedT2;
-          } else if (currentAccId === oldLinkedAccId && transactionIndex1 !== -1) {
-             // This case handles if the original "linked" transaction was actually a self-reference or error,
-             // and we're correcting it to a proper double entry.
-             // We'd effectively be creating the second leg if it was missing.
-             // For this app's logic, if t2 wasn't found and it wasn't supposed to be the same account, it's an error.
-             // If it *was* the same account, it means original data was faulty - this edit corrects by making 'newLinkedAccId' the target.
-             // For simplicity, the current code errors out above if transactionIndex2 is -1 and accounts are different.
-             // If they are the same, this means the "code" was pointing to itself, which is odd.
-             // The edit process should result in a valid t1 for currentAcc and potentially create/update t2 for newLinkedAcc.
-             // The current structure assumes t2 always exists if oldLinkedAccId is valid.
-             // We'll assume an error if t2 isn't found and oldLinkedAccId was different from currentAccId.
-             // If oldLinkedAccId was same as currentAccId, and t2 not found, means it was a single-leg entry,
-             // which is against the double-entry principle. The edit is attempting to fix this.
-             // The provided code seems to implicitly handle this by updating t1 correctly, and if t2 was missing (index -1),
-             // and it was meant for a *different* account, it errors. If it was meant for the *same* account,
-             // it implies an error in original data or a single-sided entry.
-             // The update to t2 should point to newLinkedAccId.
-            console.warn("Original linked transaction not found, potential data inconsistency or edit fixing a single-sided entry.");
-             // If we wanted to create the second leg if it was missing:
-            const newT2: Transaction = {
-                id: getNextTransactionId(), // A new ID for this leg
-                accountId: newLinkedAccId,
-                number: getNextTransactionNumber(newLinkedAccId, userId), // New number for the linked account
-                date: dateISO,
-                description: desc,
-                slipNumber: slip,
-                code: currentAccName,
-                debit: oppositeType === 'debit' ? amount : undefined,
-                credit: oppositeType === 'credit' ? amount : undefined,
-            };
-            mockDb[userId].transactions.push(newT2); // Add the new second leg
-          }
+            const success = editLocalTransaction(
+                editTarget.slipNumber, // original slip number
+                accountId!,
+                editTarget.code!, // old linked account name
+                linkedAccountId, // new linked account ID from form
+                details
+            );
 
-
-          mockDb[userId].transactions[transactionIndex1] = updatedT1;
-
-
-          updateAccountBalance(currentAccId, userId);
-          updateAccountBalance(oldLinkedAccId, userId);
-          if (oldLinkedAccId !== newLinkedAccId) {
-             updateAccountBalance(newLinkedAccId, userId);
-          }
-
-          loadAccountData();
-
-          toast({
-              title: "Transaction Updated",
-              description: `Transaction ${slip} updated. Entries in ${currentAccName} and ${newLinkedAccName} modified.`,
-          });
-
-          setIsSavingTransaction(false);
-          setIsEditTransactionDialogOpen(false);
-          setEditTarget(null);
-
+            if (success) {
+                loadAccountData();
+                toast({
+                    title: "Transaction Updated",
+                    description: `Transaction ${slip} updated.`,
+                });
+            } else {
+                toast({ title: "Error", description: "Failed to update transaction. Original transaction or accounts might not be found.", variant: "destructive" });
+            }
+        } catch(error) {
+            toast({ title: "Error", description: "An error occurred while saving transaction.", variant: "destructive" });
+        } finally {
+            setIsSavingTransaction(false);
+            setIsEditTransactionDialogOpen(false);
+            setEditTarget(null);
+        }
       }, 500);
    };
 
 
-
   const handleDeleteTransaction = (transaction: TransactionWithBalance) => {
-     const linkedAccount = mockDb[userId].accounts.find(acc => acc.name === transaction.code);
-     if (!linkedAccount && account?.name !== transaction.code) { // Allow deletion if linked to self (error case)
+     const linkedAccount = allAccounts.find(acc => acc.name === transaction.code);
+     if (!linkedAccount && account?.name !== transaction.code) { 
           toast({ title: "Deletion Error", description: `Cannot delete: Linked account "${transaction.code}" not found or is inactive. Resolve linked account issue first.`, variant: "destructive" });
           return;
      }
@@ -516,67 +392,40 @@ export default function AccountDetailPage() {
    const confirmSecondDelete = () => {
      setShowSecondDeleteConfirm(false);
      if (deleteTarget) {
-        setIsLoading(true);
+        setIsLoading(true); // Use main loading state or a specific one for delete
        setTimeout(() => {
-         const slipToDelete = deleteTarget.slipNumber;
-         const currentAccountId = deleteTarget.accountId;
-         const linkedAccountName = deleteTarget.code;
-
-         const linkedAccount = mockDb[userId].accounts.find(acc => acc.name === linkedAccountName);
-         const linkedAccountId = linkedAccount?.id;
-
-         if (!linkedAccountId && currentAccountId !== linkedAccount?.id) { // Check if linked account is not the current account
-             toast({ title: "Deletion Error", description: `Could not find linked account "${linkedAccountName}" to remove the corresponding entry.`, variant: "destructive" });
-             setIsLoading(false);
-             setDeleteTarget(null);
-             return;
+         try {
+            const success = deleteLocalTransaction(deleteTarget.slipNumber);
+            if (success) {
+                loadAccountData();
+                toast({
+                  title: "Transaction Deleted",
+                  description: `Transaction ${deleteTarget.slipNumber} and its linked entry removed. Balances updated.`,
+                });
+            } else {
+                toast({ title: "Deletion Error", description: `Could not delete transaction ${deleteTarget.slipNumber}.`, variant: "destructive" });
+            }
+         } catch(error) {
+            toast({ title: "Deletion Error", description: "An error occurred while deleting.", variant: "destructive" });
+         } finally {
+            setIsLoading(false);
+            setDeleteTarget(null);
          }
-
-         const initialLength = mockDb[userId].transactions.length;
-         mockDb[userId].transactions = mockDb[userId].transactions.filter(t => t.slipNumber !== slipToDelete);
-         const deletedCount = initialLength - mockDb[userId].transactions.length;
-
-         if (deletedCount === 0) {
-             console.warn(`Attempted to delete slip ${slipToDelete}, but no matching transactions found. Data might be inconsistent.`);
-             toast({ title: "Deletion Warning", description: `No transactions found for slip ${slipToDelete}.`, variant: "destructive" });
-         } else if (deletedCount === 1) {
-             console.warn(`Attempted to delete slip ${slipToDelete}, but only found 1 matching transaction. This implies a broken double-entry.`);
-             // Still proceed with updating balances
-         }
-
-
-         updateAccountBalance(currentAccountId, userId);
-         if (linkedAccountId && linkedAccountId !== currentAccountId) { // Only update if it's a different account
-           updateAccountBalance(linkedAccountId, userId);
-         }
-
-         loadAccountData();
-
-         toast({
-           title: "Transaction Deleted",
-           description: `Transaction ${slipToDelete} and its linked entry (if any) removed. Balances updated.`,
-           variant: "default",
-         });
-
-         setDeleteTarget(null);
       }, 500);
      } else {
          setDeleteTarget(null);
      }
    };
 
-  // --- HTML Statement Generation ---
   const handleGenerateStatement = async (type: 'whole' | 'upto') => {
      if (!account) {
           toast({ title: "Error", description: "Account data not loaded.", variant: "destructive" });
           return;
      }
-
      if (transactionsWithBalance.length === 0 && type === 'whole') {
          toast({ title: "Info", description: "No transactions in this account to generate a statement.", variant: "default" });
          return;
      }
-
      if (type === 'upto') {
        setPartialStatementTransactionNumber("");
        setIsPartialStatementDialogOpen(true);
@@ -594,17 +443,13 @@ export default function AccountDetailPage() {
          toastMessage = `Generating HTML statement for the whole account '${account.name}'...`;
          filename = `Account_Statement_${account.name.replace(/\s+/g, '_')}_Whole_${new Date().toISOString().split('T')[0]}`;
        }
-
-        if (transactionsToInclude.length === 0 && type === 'whole') { // Check again specifically for 'whole' after logic
+        if (transactionsToInclude.length === 0 && type === 'whole') {
             throw new Error("No transactions available to include in the statement.");
         }
-
        toast({ title: "Processing...", description: toastMessage });
-
        const docDetails = await prepareAccountHtmlForDownload(account.name, transactionsToInclude);
        downloadPdf(docDetails.content, filename, docDetails.mimeType);
        toast({ title: "Statement Ready", description: `HTML Statement '${filename}${docDetails.fileExtension}' generated and download started.` });
-
      } catch (error: any) {
         console.error("HTML Statement generation/download failed:", error);
         toast({ title: "Statement Error", description: error.message || "Could not generate or download statement.", variant: "destructive" });
@@ -627,9 +472,7 @@ export default function AccountDetailPage() {
           toast({ title: "Invalid Input", description: "Please enter a valid positive transaction number.", variant: "destructive" });
           return;
      }
-
      const targetIndex = transactionsWithBalance.findIndex(t => t.number === targetNumber);
-
      if (targetIndex === -1) {
          toast({ title: "Not Found", description: `Transaction number ${targetNumber} not found in this account.`, variant: "destructive" });
          return;
@@ -642,21 +485,17 @@ export default function AccountDetailPage() {
 
      try {
        transactionsToInclude = transactionsWithBalance.slice(0, targetIndex + 1);
-
        if (transactionsToInclude.length === 0) {
          throw new Error("No transactions found up to the specified number.");
        }
-
        const targetSlip = transactionsWithBalance[targetIndex].slipNumber;
        toastMessage = `Generating HTML statement for '${account.name}' up to transaction number ${targetNumber} (Slip: ${targetSlip})...`;
        filename = `Account_Statement_${account.name.replace(/\s+/g, '_')}_Upto_No${targetNumber}_${new Date().toISOString().split('T')[0]}`;
 
        toast({ title: "Processing...", description: toastMessage });
-
        const docDetails = await prepareAccountHtmlForDownload(account.name, transactionsToInclude);
        downloadPdf(docDetails.content, filename, docDetails.mimeType);
        toast({ title: "Statement Ready", description: `HTML Statement '${filename}${docDetails.fileExtension}' generated and download started.` });
-
      } catch (error: any) {
        console.error("Partial HTML Statement generation/download failed:", error);
        toast({ title: "Statement Error", description: error.message || "Could not generate or download partial statement.", variant: "destructive" });
@@ -669,38 +508,7 @@ export default function AccountDetailPage() {
    const balanceStatus = currentBalance >= 0 ? "CR" : "DR";
    const absCurrentBalance = Math.abs(currentBalance);
 
-
-    if (authLoading) {
-     return (
-        <div className="flex min-h-screen items-center justify-center p-4">
-           <Card className="w-full max-w-6xl">
-              <CardHeader>
-                  <div className="flex items-center gap-4 mb-4">
-                      <Skeleton className="h-8 w-8" />
-                      <Skeleton className="h-8 w-48" />
-                  </div>
-                  <Skeleton className="h-4 w-64" />
-              </CardHeader>
-              <CardContent>
-                  <div className="flex justify-between items-center mb-6">
-                      <Skeleton className="h-10 w-36" />
-                      <Skeleton className="h-10 w-32" />
-                  </div>
-                  <Skeleton className="h-80 w-full" />
-              </CardContent>
-              <CardFooter>
-                  <Skeleton className="h-4 w-40" />
-              </CardFooter>
-           </Card>
-        </div>
-     );
-    }
-
-    if (!user) {
-        return null;
-    }
-
-    if (isLoading) {
+    if (isLoading) { // Covers initial load
         return (
          <div className="flex min-h-screen items-center justify-center p-4">
              <Card className="w-full max-w-6xl">
@@ -765,7 +573,7 @@ export default function AccountDetailPage() {
                   <Card className="w-full max-w-md">
                       <CardHeader>
                           <CardTitle>Error</CardTitle>
-                          <CardDescription>Account not found or you do not have permission to view it.</CardDescription>
+                          <CardDescription>Account not found. It might have been deleted or an error occurred.</CardDescription>
                       </CardHeader>
                       <CardFooter>
                           <Button onClick={() => router.push("/dashboard")}>
@@ -776,7 +584,6 @@ export default function AccountDetailPage() {
               </div>
           );
       }
-
 
   return (
     <div className="flex min-h-screen flex-col bg-muted/40 p-4">
@@ -850,7 +657,7 @@ export default function AccountDetailPage() {
                      return (
                        <TableRow key={t.id} className={cn("hover:bg-muted/80")}>
                          <TableCell>{t.number}</TableCell>
-                         <TableCell>{new Date(t.date + 'T00:00:00').toLocaleDateString()}</TableCell> {/* Ensure date is parsed correctly */}
+                         <TableCell>{new Date(t.date + 'T00:00:00').toLocaleDateString()}</TableCell>
                          <TableCell className="max-w-[250px] truncate" title={t.description}>{t.description}</TableCell>
                          <TableCell>{t.slipNumber}</TableCell>
                          <TableCell className="text-right font-mono">
@@ -911,8 +718,6 @@ export default function AccountDetailPage() {
            </CardFooter>
          </Card>
        </main>
-
-       {/* --- Dialogs --- */}
 
         <Dialog open={isPartialStatementDialogOpen} onOpenChange={setIsPartialStatementDialogOpen}>
             <DialogContent className="sm:max-w-md">
